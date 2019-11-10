@@ -1,5 +1,5 @@
-use config::{Config, ConfigError, Environment, File};
-use std::env;
+use config::{Config, ConfigError, File};
+use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Deserialize)]
 pub struct Stream {

@@ -1,5 +1,3 @@
-#[macro_use]
-extern crate serde_derive;
 extern crate web_view;
 extern crate hidapi;
 extern crate config;
@@ -7,13 +5,12 @@ extern crate serde;
 extern crate bincode;
 use std::thread;
 use web_view::*;
-mod settings;
-use settings::Settings;
+use serde::{Serialize, Deserialize};
+
+use common::settings::Settings;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-
-
 
 // class Signals(int, enum.Enum):
 

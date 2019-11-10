@@ -36,6 +36,7 @@ MANIFEST
 .cache
 .python-version
 .mypy_cache/
+.vscode
 
 
 #Added by cargo
