@@ -1,8 +1,3 @@
-debug = false
-
-[stream]
-url = "http://192.168.88.251:8081"
-
-[control]
 host = "192.168.88.251"
-port = 20301
+ctrl_port = 20301
+http_stream_port = 8081

@@ -3,13 +3,15 @@ INSTALL_DIR=/opt/cat.hunter
 USER=mermoldy
 SSH_PORT=22
 
-default: build
+default: run
 
-build_:
-	mkdir -p "$(HOME)/.terraform.d/plugins"
-	go build -ldflags="${LDFLAGS}" -o="$(HOME)/.terraform.d/plugins/terraform-provisioner-scalarizr"
+run:
+	cargo fmt
+	RUST_BACKTRACE=full RUST_LOG=debug cargo run
 
-build: fmt-check vet-check lint-check build_
+build:
+	cargo fmt
+	RUST_BACKTRACE=full RUST_LOG=debug cargo build
 
 # Setup ARMv7 Toolchain for MacOS:
 #  - brew install arm-linux-gnueabihf-binutils
@@ -20,6 +22,7 @@ sync:
 	rsync -e "ssh -p $(SSH_PORT)" Settings.toml "$(USER)@$(URL):$(INSTALL_DIR)"
 	rsync -e "ssh -p $(SSH_PORT)" ./target/armv7-unknown-linux-musleabihf/debug/server "$(USER)@$(URL):$(INSTALL_DIR)"
 	@echo "Done"
+	make restart
 
 # Setup:
 # raspberrypi 🍓 ➜ ~ sudo cat /etc/sudoers.d/mermoldy
@@ -37,9 +40,6 @@ tail:
 	@echo "Starring cat.hunter server on $(URL)..."
 	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "journalctl -u cat.hunter -f"
 	@echo "Done"
-
-fmt-check:
-	cargo fmt
 
 clean:
 	rm -rf targer

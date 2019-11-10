@@ -1,11 +1,14 @@
-extern crate web_view;
-extern crate hidapi;
-extern crate config;
-extern crate serde;
+#[macro_use]
+extern crate log;
+
 extern crate bincode;
+extern crate config;
+extern crate hidapi;
+extern crate serde;
+extern crate web_view;
+use serde::{Deserialize, Serialize};
 use std::thread;
 use web_view::*;
-use serde::{Serialize, Deserialize};
 
 use common::settings::Settings;
 
@@ -34,7 +37,6 @@ use std::net::TcpStream;
 //     ok = 0
 //     error = 1
 
-
 #[derive(Serialize, Deserialize)]
 pub struct KeyboardInput {
     pub up: bool,
@@ -53,52 +55,67 @@ impl Eq for KeyboardInput {}
 pub struct App {
     pub settings: Settings,
     pub stream: Option<std::net::TcpStream>,
-    pub last_key: Option<KeyboardInput>
+    pub last_key: Option<KeyboardInput>,
 }
 
 impl App {
     pub fn new() -> App {
-        let settings = Settings::new();
-        println!("Config: {:?}", settings);
         App {
-            settings: settings.unwrap(),
+            settings: Settings::new().unwrap(),
             stream: None,
             last_key: None,
         }
     }
 
     pub fn open(&mut self) {
-        match TcpStream::connect(&self.settings.control.url) {
+        let url = format!("{}:{}", &self.settings.host, &self.settings.ctrl_port);
+        match TcpStream::connect(url) {
             Ok(stream) => {
-                println!("Successfully connected to server in port 3333");
+                info!("Successfully connected to server in port 3333");
                 self.stream = Some(stream);
-
-                // let mut data = [0 as u8; 6]; // using 6 byte buffer
-                // match stream.read_exact(&mut data) {
-                //     Ok(_) => {
-                //         if &data == msg {
-                //             println!("Reply is ok!");
-                //         } else {
-                //             let text = from_utf8(&data).unwrap();
-                //             println!("Unexpected reply: {}", text);
-                //         }
-                //     }
-                //     Err(e) => {
-                //         println!("Failed to receive data: {}", e);
-                //     }
-                // }
             }
             Err(e) => {
-                println!("Failed to connect: {}", e);
+                error!("Failed to connect: {}", e);
             }
         }
-        println!("Terminated.");
     }
 
-    fn send(&mut self, message: &[u8; 6]) {
-        // let msg = b"Hello!";
-        println!("Sent {:?}, awaiting reply...", message);
-        self.stream.as_ref().unwrap().write(message).unwrap();
+    fn read(&mut self) {
+        match self.stream.as_ref() {
+            Some(mut stream) => {
+                let mut data = [0 as u8; 6]; // using 6 byte buffer
+                match stream.read_exact(&mut data) {
+                    Ok(_) => {
+                        debug!("Readed {:?}", data);
+                    }
+                    Err(e) => {
+                        error!("Failed to read: {:?}", e);
+                    }
+                }
+            }
+            None => {
+                error!("Failed to read. Connection is not intialized. Reconnecting...");
+                self.open();
+            }
+        }
+    }
+
+    fn send(&mut self, input: KeyboardInput) {
+        let bytes = bincode::serialize(&input).unwrap();
+        match self.stream.as_ref() {
+            Some(mut stream) => match stream.write(&bytes) {
+                Ok(written) => {
+                    debug!("Written {:?} bytes", written);
+                }
+                Err(e) => {
+                    error!("Failed to write: {:?}", e);
+                }
+            },
+            None => {
+                error!("Failed to write. Connection is not intialized. Reconnecting...");
+                self.open();
+            }
+        }
     }
 
     fn listen(&mut self) {
@@ -112,27 +129,41 @@ impl App {
             // https://www.psdevwiki.com/ps4/DS4-USB
             //
             let up = button_input & u8::pow(2, 5) != 0;
-            let key = Some(KeyboardInput{up: up, down: false, left: false, right: false});
+            let key = Some(KeyboardInput {
+                up: up,
+                down: false,
+                left: false,
+                right: false,
+            });
             if key != self.last_key {
-                let bytes = bincode::serialize(&key).unwrap();
                 self.last_key = key;
-                println!("Up: {:?}",  bytes);
-                println!("Updated!");
+                self.send(KeyboardInput {
+                    up: up,
+                    down: false,
+                    left: false,
+                    right: false,
+                });
             }
         }
     }
 }
 
 fn main() {
+    env_logger::init();
+
     let main_app = thread::spawn(move || {
         let mut app = App::new();
+        app.open();
         app.listen();
     });
 
     let settings = Settings::new().unwrap();
     web_view::builder()
         .title("Cat.Hunter")
-        .content(Content::Url(settings.stream.url))
+        .content(Content::Url(format!(
+            "http://{}:{}",
+            &settings.host, &settings.http_stream_port
+        )))
         .size(800, 600)
         .resizable(true)
         .debug(true)

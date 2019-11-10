@@ -5,11 +5,11 @@ authors = ["Serhii Babak <mermoldy@gmail.com>"]
 edition = "2018"
 
 [dependencies]
+common = { path = "../common" }
 web-view = "*"
 hidapi = "1.0.1"
 config = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 bincode = "*"
-log = "*"
-log4rs = "*"
-common = { path = "../common" }
+log = "0.4.0"
+env_logger = "0.7.1"

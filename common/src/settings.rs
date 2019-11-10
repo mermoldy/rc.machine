@@ -2,21 +2,10 @@ use config::{Config, ConfigError, File};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub struct Stream {
-    pub url: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Control {
-    pub host: String,
-    pub port: u16,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct Settings {
-    pub debug: bool,
-    pub stream: Stream,
-    pub control: Control,
+    pub host: String,
+    pub ctrl_port: u16,
+    pub http_stream_port: u16,
 }
 
 impl Settings {
