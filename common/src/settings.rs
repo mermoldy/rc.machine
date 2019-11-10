@@ -1,5 +1,5 @@
 use config::{Config, ConfigError, File};
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct Stream {
@@ -8,7 +8,8 @@ pub struct Stream {
 
 #[derive(Debug, Deserialize)]
 pub struct Control {
-    pub url: String,
+    pub host: String,
+    pub port: u16,
 }
 
 #[derive(Debug, Deserialize)]

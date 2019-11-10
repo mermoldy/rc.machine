@@ -10,4 +10,6 @@ hidapi = "1.0.1"
 config = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 bincode = "*"
+log = "*"
+log4rs = "*"
 common = { path = "../common" }
