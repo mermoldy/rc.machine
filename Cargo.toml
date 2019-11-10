@@ -1,0 +1,22 @@
+[package]
+name = "cat_hunter"
+version = "0.1.0"
+authors = ["Serhii Babak <mermoldy@gmail.com>"]
+edition = "2018"
+default-run = "client"
+
+[dependencies]
+web-view = "*"
+hidapi = "1.0.1"
+config = "0.9"
+serde = "*"
+serde_derive = "*"
+bincode = "*"
+
+[[bin]]
+name = "client"
+path = "src/client/main.rs"
+
+[[bin]]
+name = "server"
+path = "src/server/main.rs"
