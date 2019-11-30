@@ -14,7 +14,6 @@ use common::settings::Settings;
 
 extern crate sysfs_gpio;
 
-
 fn blink_my_led(led: u64, duration_ms: u64, period_ms: u64) -> sysfs_gpio::Result<()> {
     let my_led = Pin::new(led);
     my_led.with_exported(|| {
