@@ -1,10 +1,32 @@
 use config::{Config, ConfigError, File};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::fmt;
 
-#[derive(Serialize, Deserialize)]
-pub struct KeyboardInput {
-    pub up: bool,
-    pub down: bool,
+#[derive(Serialize, Deserialize, Copy, Clone)]
+pub struct MachineState {
+    pub forward: bool,
+    pub backward: bool,
     pub left: bool,
     pub right: bool,
+    pub lamp_enabled: bool,
 }
+
+impl PartialEq for MachineState {
+    fn eq(&self, other: &Self) -> bool {
+        (self.forward == other.forward)
+            && (self.backward == other.backward)
+            && (self.left == other.left)
+            && (self.right == other.right)
+            && (self.lamp_enabled == other.lamp_enabled)
+    }
+}
+impl fmt::Debug for MachineState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "MachineState(forward={:?}, backward={:?}, left={:?}, right={:?}, lamp_enabled={:?})",
+            self.forward, self.backward, self.left, self.right, self.lamp_enabled,
+        )
+    }
+}
+impl Eq for MachineState {}

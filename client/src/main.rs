@@ -12,7 +12,8 @@ extern crate serde;
 extern crate web_view;
 
 use common::settings::Settings;
-use gilrs::{Button, Event, Gilrs};
+use common::types::MachineState;
+use gilrs::{Event, Gilrs};
 use piston::event_loop::*;
 use piston::input;
 use piston::input::*;
@@ -60,39 +61,26 @@ use texture::{CreateTexture, Format};
 //     ok = 0
 //     error = 1
 
-#[derive(Serialize, Deserialize)]
-pub struct KeyboardInput {
-    pub up: bool,
-    pub down: bool,
-    pub left: bool,
-    pub right: bool,
-}
-
-impl PartialEq for KeyboardInput {
-    fn eq(&self, other: &Self) -> bool {
-        self.up == other.up
-    }
-}
-impl Eq for KeyboardInput {}
-
 pub struct App {
     pub settings: Settings,
     pub stream: Option<std::net::TcpStream>,
-    pub last_key: Option<KeyboardInput>,
+    pub state: Option<MachineState>,
 }
-
+use std::net::ToSocketAddrs;
 impl App {
     pub fn new() -> App {
         App {
             settings: Settings::new().unwrap(),
             stream: None,
-            last_key: None,
+            state: None,
         }
     }
 
     pub fn open(&mut self) {
         let url = format!("{}:{}", &self.settings.host, &self.settings.ctrl_port);
-        match TcpStream::connect(url) {
+        info!("Connecting to {:?}...", url);
+        let addr: std::net::SocketAddr = url.parse().expect("Unable to parse socket address");
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(100)) {
             Ok(stream) => {
                 info!("Successfully connected to server in port 3333");
                 self.stream = Some(stream);
@@ -122,9 +110,17 @@ impl App {
             }
         }
     }
-
-    fn send(&mut self, input: KeyboardInput) {
-        let bytes = bincode::serialize(&input).unwrap();
+    fn update(&mut self, input: MachineState) {
+        let s = Some(input);
+        if self.state != s {
+            self.state = s;
+            self.push();
+        } else {
+            debug!("No chanhes in state");
+        }
+    }
+    fn push(&mut self) {
+        let bytes = bincode::serialize(&self.state.unwrap()).unwrap();
         match self.stream.as_ref() {
             Some(mut stream) => match stream.write(&bytes) {
                 Ok(written) => {
@@ -132,6 +128,7 @@ impl App {
                 }
                 Err(e) => {
                     error!("Failed to write: {:?}", e);
+                    self.open();
                 }
             },
             None => {
@@ -142,9 +139,80 @@ impl App {
     }
 }
 
-fn main2() {
+use gilrs::{Axis, Button, EventType};
+
+fn main() {
+    println!("Initializing a client...");
     env_logger::init();
     let settings = Settings::new().unwrap();
+
+    let mut gilrs = Gilrs::new().unwrap();
+    thread::spawn(move || {
+        let mut app = App::new();
+        app.open();
+
+        info!("Starting event loop...");
+        loop {
+            while let Some(Event { id, event, time }) = gilrs.next_event() {
+                let mut state = MachineState {
+                    backward: false,
+                    forward: false,
+                    left: false,
+                    right: false,
+                    lamp_enabled: false,
+                };
+                //println!("New event from {}: {:?}", id, event);
+                match event {
+                    EventType::ButtonPressed(button, code) => match button {
+                        Button::East => {
+                            state.lamp_enabled = true;
+                            println!("lamb enabled");
+                            app.update(state);
+                        }
+                        _ => {}
+                    },
+                    EventType::AxisChanged(button, value, code) => match button {
+                        Axis::LeftStickX => {
+                            if value > 0.9 {
+                                state.right = true;
+                                state.left = false;
+                            } else if value < -0.9 {
+                                state.right = false;
+                                state.left = true;
+                            } else {
+                                state.right = false;
+                                state.left = false;
+                            }
+                            println!("X axis {:?}", value);
+                            app.update(state);
+                        }
+                        _ => {}
+                    },
+                    EventType::ButtonChanged(button, value, code) => match button {
+                        Button::RightTrigger2 => {
+                            state.forward = (value == 1.0);
+                            app.update(state);
+                        }
+                        Button::LeftTrigger2 => {
+                            state.backward = (value == 1.0);
+                            app.update(state);
+                        }
+                        _ => {}
+                    },
+                    EventType::ButtonReleased(button, code) => match button {
+                        Button::East => {
+                            state.lamp_enabled = false;
+                            println!("lamb disabled");
+                            app.update(state);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        }
+    });
+
     web_view::builder()
         .title("Cat.Hunter")
         .content(Content::Url(format!(
@@ -184,40 +252,38 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
                         buffer.extend_from_slice(&read_buffer);
 
                         match find_subsequence(&buffer, &end_marker) {
-                            Some(body) => {
-                                match find_subsequence(&buffer, &start_marker) {
-                                    Some(header) => {
-                                        let mut vec2 = buffer.split_off(body + 2);
-                                        let mut data = buffer.split_off(header);
-                                        buffer.clear();
-                                        buffer.extend(vec2);
-                                        i = i + 1;
-                                        sender.send(Message {
-                                            data: data.to_vec(),
-                                        });
-                                        println!(
-                                            "Sended {:?}, Buffer: {:?}, Total frames: {:?}",
-                                            data.len(),
-                                            buffer.len(),
-                                            i
-                                        );
+                            Some(body) => match find_subsequence(&buffer, &start_marker) {
+                                Some(header) => {
+                                    let mut vec2 = buffer.split_off(body + 2);
+                                    let mut data = buffer.split_off(header);
+                                    buffer.clear();
+                                    buffer.extend(vec2);
+                                    i = i + 1;
+                                    sender.send(Message {
+                                        data: data.to_vec(),
+                                    });
+                                    println!(
+                                        "Sended {:?}, Buffer: {:?}, Total frames: {:?}",
+                                        data.len(),
+                                        buffer.len(),
+                                        i
+                                    );
 
-                                        if i % 10 == 0 {
-                                            let duration = start.elapsed();
-                                            let d = duration.as_secs();
-                                            if d != 0 {
-                                                println!(
+                                    if i % 10 == 0 {
+                                        let duration = start.elapsed();
+                                        let d = duration.as_secs();
+                                        if d != 0 {
+                                            println!(
                                             "Time elapsed in expensive_function() is: {:?}, FPS: {:?}, att: {:?}",
                                             duration,
                                             i / d,
                                             i,
                                         );
-                                            }
                                         }
                                     }
-                                    _ => {}
                                 }
-                            }
+                                _ => {}
+                            },
                             _ => {}
                         }
                     }
@@ -240,13 +306,10 @@ struct Message {
     data: Vec<u8>,
 }
 
-
-fn main() {
-    let opengl = OpenGL::V3_2;
-
+// `Texture::from_image` leaks :(
+fn main_piston() {
     let mut window: PistonWindow = WindowSettings::new("Hello Piston!", [720, 576])
         .exit_on_esc(true)
-        .graphics_api(opengl)
         .build()
         .unwrap();
     println!("Press C to turn capture cursor on/off");

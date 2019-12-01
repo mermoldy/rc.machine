@@ -3,6 +3,8 @@ INSTALL_DIR=/opt/cat.hunter
 USER=mermoldy
 SSH_PORT=22
 
+SERVER_TARGET=armv7-unknown-linux-musleabihf
+
 default: run
 
 run:
@@ -11,20 +13,21 @@ run:
 
 run_release:
 	cargo fmt
-	RUST_BACKTRACE=full RUST_LOG=debug cargo run  --release
+	RUST_BACKTRACE=full RUST_LOG=debug cargo run --release
 
 build:
 	cargo fmt
 	RUST_BACKTRACE=full RUST_LOG=debug cargo build
 
 # Setup ARMv7 Toolchain for MacOS:
-#  - brew install arm-linux-gnueabihf-binutils
-#  - rustup target add armv7-unknown-linux-musleabihf
+# - brew install arm-linux-gnueabihf-binutils
+# - rustup target add armv7-unknown-linux-musleabihf
 sync:
 	@echo "Syncing cat.hunter files to $(URL):$(INSTALL_DIR)..."
-	cargo build --workspace=server --bin=server --target=armv7-unknown-linux-musleabihf
+	cargo fmt
+	cargo +nightly build --release --workspace=server --bin=server --target=$(SERVER_TARGET) -Z config-profile
 	rsync -e "ssh -p $(SSH_PORT)" Settings.toml "$(USER)@$(URL):$(INSTALL_DIR)"
-	rsync -e "ssh -p $(SSH_PORT)" ./target/armv7-unknown-linux-musleabihf/debug/server "$(USER)@$(URL):$(INSTALL_DIR)"
+	rsync -e "ssh -p $(SSH_PORT)" ./target/$(SERVER_TARGET)/release/server "$(USER)@$(URL):$(INSTALL_DIR)"
 	@echo "Done"
 	make restart
 
@@ -40,10 +43,17 @@ restart:
 
 # Setup:
 # raspberrypi 🍓 ➜ ~ sudo usermod -a -G systemd-journal mermoldy
+sync_run:
+	@echo "Starring cat.hunter server on $(URL)..."
+	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "cd /opt/cat.hunter && sudo  ./server"
+	@echo "Done"
+
+# Setup:
+# raspberrypi 🍓 ➜ ~ sudo usermod -a -G systemd-journal mermoldy
 tail:
 	@echo "Starring cat.hunter server on $(URL)..."
 	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "journalctl -u cat.hunter -f"
 	@echo "Done"
 
 clean:
-	rm -rf targer
+	rm -rf target
