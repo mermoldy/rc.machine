@@ -52,7 +52,7 @@ sync_run:
 # raspberrypi 🍓 ➜ ~ sudo usermod -a -G systemd-journal mermoldy
 tail:
 	@echo "Starring cat.hunter server on $(URL)..."
-	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "journalctl -u cat.hunter -f"
+	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "tail -f /var/log/cat.hunter.log -n 120"
 	@echo "Done"
 
 clean:

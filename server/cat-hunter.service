@@ -1,0 +1,19 @@
+#
+# /etc/systemd/system/cat-hunter.service
+#
+[Unit]
+Description=Cat Hunter
+Requires=network-online.target
+
+[Service]
+WorkingDirectory=/opt/cat.hunter/
+Type=simple
+Restart=always
+RemainAfterExit=yes
+User=root
+ExecStart=/opt/cat.hunter/server
+Environment=RUST_LOG=debug
+Environment=RUST_BACKTRACE=full
+
+[Install]
+WantedBy=default.target

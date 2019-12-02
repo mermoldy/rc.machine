@@ -30,3 +30,15 @@ impl fmt::Debug for MachineState {
     }
 }
 impl Eq for MachineState {}
+
+impl MachineState {
+    pub fn new() -> MachineState {
+        MachineState {
+            forward: false,
+            backward: false,
+            left: false,
+            right: false,
+            lamp_enabled: false,
+        }
+    }
+}

@@ -1,135 +1,212 @@
 #[macro_use]
 extern crate log;
 extern crate bincode;
+extern crate log4rs;
+extern crate log_panics;
+extern crate signal_hook;
 extern crate sysfs_gpio;
-
+use common::settings::Settings;
+use common::types::MachineState;
+use log::LevelFilter;
+use log4rs::append::file::FileAppender;
+use log4rs::config::{Appender, Config, Root};
+use log4rs::encode::pattern::PatternEncoder;
+use signal_hook::{iterator::Signals, SIGINT, SIGTERM};
+use std::env;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::thread;
-use common::types::MachineState;
-use std::env;
 use std::thread::sleep;
+use std::time;
 use std::time::Duration;
 use sysfs_gpio::{Direction, Pin};
-use common::settings::Settings;
 
 struct Engine {
-    rotation_pin: Pin,
-    pwm_pin: Pin,
+    pin_1: Pin,
+    pin_2: Pin,
 }
 
 impl Engine {
-    pub fn new(rotation_pin: u64, pwm_pin: u64) -> Engine {
+    pub fn new(pin_1: u64, pin_2: u64) -> Engine {
         Engine {
-            rotation_pin: Pin::new(rotation_pin),
-            pwm_pin: Pin::new(pwm_pin),
+            pin_1: Pin::new(pin_1),
+            pin_2: Pin::new(pin_2),
         }
     }
 
     pub fn forward(&mut self) {
-        self.rotation_pin.set_value(1).unwrap();
-        self.pwm_pin.set_value(0).unwrap();
+        self.pin_1.set_value(1).expect("Failed to set pin");
+        self.pin_2.set_value(0).expect("Failed to set pin");
     }
     pub fn backward(&mut self) {
-        self.rotation_pin.set_value(0).unwrap();
-        self.pwm_pin.set_value(1).unwrap();
+        self.pin_1.set_value(0).expect("Failed to set pin");
+        self.pin_2.set_value(1).expect("Failed to set pin");
     }
     pub fn stop(&mut self) {
-        self.rotation_pin.set_value(0).unwrap();
-        self.pwm_pin.set_value(0).unwrap();
+        self.pin_1.set_value(0).expect("Failed to set pin");
+        self.pin_2.set_value(0).expect("Failed to set pin");
     }
     pub fn export(&mut self) {
-        self.rotation_pin.export().unwrap();
-        self.pwm_pin.export().unwrap();
+        self.pin_1.export().expect("Failed to export pin");
+        self.pin_2.export().expect("Failed to export pin");
 
-        self.pwm_pin.set_direction(Direction::High).unwrap();
-        self.rotation_pin.set_direction(Direction::High).unwrap();
+        self.pin_1.set_direction(Direction::High).unwrap();
+        self.pin_2.set_direction(Direction::High).unwrap();
     }
     pub fn unexport(&mut self) {
-        self.rotation_pin.unexport().unwrap();
-        self.pwm_pin.unexport().unwrap();
+        self.pin_1.unexport().expect("Failed to unexport pin");
+        self.pin_2.unexport().expect("Failed to unexport pin");
     }
 }
 
+struct Lamp {
+    pin: Pin,
+}
 
-fn handle_client(mut stream: TcpStream) {
-    let mut data = [0 as u8; 50];
+struct Machine {
+    lamp: Lamp,
+    right_engine: Engine,
+    left_engine: Engine,
+}
 
-    let my_led = Pin::new(18);
+impl Lamp {
+    pub fn new(pin: u64) -> Lamp {
+        Lamp { pin: Pin::new(pin) }
+    }
 
-    let mut right_engine = Engine::new(17, 27);
-    let mut left_engine = Engine::new(23, 22);
+    pub fn export(&mut self) {
+        self.pin.export().expect("Failed to export pin");
+        self.pin.set_direction(Direction::High).unwrap();
+    }
+    pub fn unexport(&mut self) {
+        self.pin.unexport().expect("Failed to unexport pin");
+    }
+    pub fn enable(&mut self) {
+        self.pin.set_value(1);
+    }
+    pub fn disable(&mut self) {
+        self.pin.set_value(0);
+    }
+}
 
-    my_led.export().unwrap();
-    right_engine.export();
-    left_engine.export();
-    my_led.set_direction(Direction::High).unwrap();
+impl Machine {
+    pub fn new() -> Machine {
+        Machine {
+            lamp: Lamp::new(18),
+            right_engine: Engine::new(17, 27),
+            left_engine: Engine::new(23, 22),
+        }
+    }
 
-    while match stream.read(&mut data) {
-        Ok(size) => {
-            let buf = &data[0..size];
-            let state: MachineState = bincode::deserialize(&buf).unwrap();
-            info!("Readed {} state: {:?}", size, state);
-            if state.lamp_enabled {
-                my_led.set_value(1).unwrap();
-            } else {
-                my_led.set_value(0).unwrap();
-            }
-
-            if state.forward {
-                if state.left {
-                    right_engine.stop();
-                    left_engine.backward();
-                } else if state.right {
-                    right_engine.backward();
-                    left_engine.stop();
-                } else {
-                    right_engine.forward();
-                    left_engine.forward();
-                }
-            } else if state.backward {
-                if state.left {
-                    right_engine.backward();
-                    left_engine.stop();
-                } else if state.right {
-                    right_engine.stop();
-                    left_engine.backward();
-                } else {
-                    right_engine.backward();
-                    left_engine.backward();
-                }
-            } else if state.left {
-                right_engine.backward();
-                left_engine.forward();
+    pub fn update(&mut self, state: MachineState) {
+        if state.lamp_enabled {
+            self.lamp.enable();
+        } else {
+            self.lamp.disable();
+        }
+        if state.forward {
+            if state.left {
+                self.right_engine.stop();
+                self.left_engine.backward();
             } else if state.right {
-                right_engine.forward();
-                left_engine.backward();
+                self.right_engine.backward();
+                self.left_engine.stop();
             } else {
-                right_engine.stop();
-                left_engine.stop();
+                self.right_engine.forward();
+                self.left_engine.forward();
             }
-            // stream.write(&data[0..size]).unwrap();
-            true
+        } else if state.backward {
+            if state.left {
+                self.right_engine.backward();
+                self.left_engine.stop();
+            } else if state.right {
+                self.right_engine.stop();
+                self.left_engine.backward();
+            } else {
+                self.right_engine.backward();
+                self.left_engine.backward();
+            }
+        } else if state.left {
+            self.right_engine.backward();
+            self.left_engine.forward();
+        } else if state.right {
+            self.right_engine.forward();
+            self.left_engine.backward();
+        } else {
+            self.right_engine.stop();
+            self.left_engine.stop();
         }
-        Err(_) => {
-            println!(
-                "An error occurred, terminating connection with {}",
-                stream.peer_addr().unwrap()
-            );
-            stream.shutdown(Shutdown::Both).unwrap();
-            false
-        }
-    } {}
-    my_led.unexport().unwrap();
-    right_engine.unexport();
-    left_engine.unexport();
+    }
+    pub fn export(&mut self) {
+        self.lamp.export();
+        self.right_engine.export();
+        self.left_engine.export();
+
+        self.lamp.disable();
+        self.left_engine.stop();
+        self.right_engine.stop();
+    }
+    pub fn unexport(&mut self) {
+        self.lamp.unexport();
+        self.right_engine.unexport();
+        self.left_engine.unexport();
+    }
 }
 
 fn main() {
-    println!("Initializing a server...");
-    env::set_var("RUST_LOG", "debug");
-    env_logger::init();
+    println!("Starting...");
+    log_panics::init();
 
+    let mut machine = Machine::new();
+    machine.export();
+
+    let signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
+
+    let logfile = FileAppender::builder()
+        .encoder(Box::new(PatternEncoder::new(
+            "[{d(%Y-%m-%d %H:%M:%S)} {l} {t}] {m}{n}",
+        )))
+        .build("/var/log/cat.hunter.log")
+        .unwrap();
+
+    let config = Config::builder()
+        .appender(Appender::builder().build("logfile", Box::new(logfile)))
+        .build(
+            Root::builder()
+                .appender("logfile")
+                .build(LevelFilter::Debug),
+        )
+        .unwrap();
+
+    log4rs::init_config(config).unwrap();
+    let (tx, rx): (
+        std::sync::mpsc::Sender<MachineState>,
+        std::sync::mpsc::Receiver<MachineState>,
+    ) = mpsc::channel();
+
+    thread::spawn(move || {
+        listen_states(tx);
+    });
+
+    println!("Started");
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(state) => {
+                info!("Got state: {:?}", state);
+                machine.update(state);
+            }
+            Err(_) => {}
+        }
+        for sig in signals.pending() {
+            info!("Received signal {:?}, exiting...", sig);
+            machine.unexport();
+            std::process::exit(sig);
+        }
+    }
+}
+
+fn listen_states(sender: std::sync::mpsc::Sender<MachineState>) {
     let settings = Settings::new().unwrap();
     let listener = TcpListener::bind(format!("0.0.0.0:{}", &settings.ctrl_port)).unwrap();
     info!("Server listening on port {:?}", &settings.ctrl_port);
@@ -138,7 +215,7 @@ fn main() {
         match stream {
             Ok(stream) => {
                 info!("New connection: {}", stream.peer_addr().unwrap());
-                thread::spawn(move || handle_client(stream));
+                handle_client(stream, &sender);
             }
             Err(e) => {
                 error!("Error: {}", e);
@@ -146,4 +223,34 @@ fn main() {
         }
     }
     drop(listener);
+}
+
+fn handle_client(mut stream: TcpStream, sender: &std::sync::mpsc::Sender<MachineState>) {
+    let addr = stream.peer_addr().unwrap();
+    let mut data = [0 as u8; 50];
+
+    loop {
+        match stream.read(&mut data) {
+            Ok(size) => {
+                info!("Readed {} bytes, deserializing...", size);
+                match bincode::deserialize::<MachineState>(&data[0..size]) {
+                    Ok(state) => {
+                        sender.send(state);
+                    }
+                    _ => {
+                        error!("Failed to deserialize incoming data");
+                    }
+                };
+                // stream.write(&data[0..size]).unwrap();
+            }
+            Err(_) => {
+                error!("An error occurred, terminating connection with {}", addr);
+                match stream.shutdown(Shutdown::Both) {
+                    Ok(_) => {}
+                    _ => error!("Failed to shutdown stream properly"),
+                }
+                break;
+            }
+        }
+    }
 }
