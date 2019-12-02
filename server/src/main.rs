@@ -232,6 +232,9 @@ fn handle_client(mut stream: TcpStream, sender: &std::sync::mpsc::Sender<Machine
     loop {
         match stream.read(&mut data) {
             Ok(size) => {
+                if size == 0 {
+                    break;
+                }
                 info!("Readed {} bytes, deserializing...", size);
                 match bincode::deserialize::<MachineState>(&data[0..size]) {
                     Ok(state) => {
@@ -241,7 +244,6 @@ fn handle_client(mut stream: TcpStream, sender: &std::sync::mpsc::Sender<Machine
                         error!("Failed to deserialize incoming data");
                     }
                 };
-                // stream.write(&data[0..size]).unwrap();
             }
             Err(_) => {
                 error!("An error occurred, terminating connection with {}", addr);
@@ -253,4 +255,5 @@ fn handle_client(mut stream: TcpStream, sender: &std::sync::mpsc::Sender<Machine
             }
         }
     }
+    info!("Exited: {}", addr);
 }

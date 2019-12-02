@@ -9,6 +9,7 @@ extern crate hidapi;
 extern crate piston;
 extern crate piston_window;
 extern crate serde;
+extern crate texture;
 extern crate web_view;
 
 use common::settings::Settings;
@@ -26,6 +27,7 @@ use std::io::prelude::*;
 use std::io::{Read, Write};
 use std::mem;
 use std::net::TcpStream;
+use std::net::ToSocketAddrs;
 use std::path::Path;
 use std::ptr;
 use std::str::from_utf8;
@@ -33,40 +35,14 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use web_view::*;
-
-extern crate texture;
-
 use texture::{CreateTexture, Format};
-
-// class Signals(int, enum.Enum):
-
-//     # engine signals
-//     move_forward = 1
-//     move_backward = 2
-//     move_left = 3
-//     move_right = 4
-//     stop_forward = 5
-//     stop_backward = 6
-//     stop_left = 7
-//     stop_right = 8
-//     stop = 20
-
-//     # light signals
-//     enable_light = 21
-//     disable_light = 22
-//     trigger_light = 23
-
-// class SignalResult(int, enum.Enum):
-//     ok = 0
-//     error = 1
+use web_view::*;
 
 pub struct App {
     pub settings: Settings,
     pub stream: Option<std::net::TcpStream>,
     pub state: Option<MachineState>,
 }
-use std::net::ToSocketAddrs;
 impl App {
     pub fn new() -> App {
         App {
@@ -219,7 +195,7 @@ fn main() {
             "http://{}:{}",
             &settings.host, &settings.http_stream_port
         )))
-        .size(800, 600)
+        .size(1200, 800)
         .resizable(true)
         .debug(true)
         .user_data(())
