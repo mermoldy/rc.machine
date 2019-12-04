@@ -1,4 +1,3 @@
-use config::{Config, ConfigError, File};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

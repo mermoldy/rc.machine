@@ -6,6 +6,7 @@ extern crate gfx_device_gl;
 extern crate gfx_graphics;
 extern crate gilrs;
 extern crate hidapi;
+extern crate image;
 extern crate piston;
 extern crate piston_window;
 extern crate serde;
@@ -14,14 +15,16 @@ extern crate web_view;
 
 use common::settings::Settings;
 use common::types::MachineState;
+use gilrs::{Axis, Button, EventType};
 use gilrs::{Event, Gilrs};
+use image::load_from_memory_with_format;
+use image::{DynamicImage, ImageFormat, RgbaImage};
 use piston::event_loop::*;
 use piston::input;
 use piston::input::*;
-use piston::window::WindowSettings;
-use piston_window::PistonWindow;
-use piston_window::Viewport;
-use piston_window::*;
+use piston_window::{
+    Context, EventSettings, Events, G2d, PistonWindow, Texture, Viewport, WindowSettings,
+};
 use serde::{Deserialize, Serialize};
 use std::io::prelude::*;
 use std::io::{Read, Write};
@@ -33,16 +36,23 @@ use std::ptr;
 use std::str::from_utf8;
 use std::sync::mpsc;
 use std::thread;
+use std::thread::sleep;
 use std::time::Duration;
 use std::time::Instant;
-use texture::{CreateTexture, Format};
+use texture::{CreateTexture, Format, TextureSettings};
 use web_view::*;
+
+#[derive(Debug)]
+struct Message {
+    data: Vec<u8>,
+}
 
 pub struct App {
     pub settings: Settings,
     pub stream: Option<std::net::TcpStream>,
     pub state: Option<MachineState>,
 }
+
 impl App {
     pub fn new() -> App {
         App {
@@ -95,6 +105,7 @@ impl App {
             debug!("No chanhes in state");
         }
     }
+
     fn push(&mut self) {
         let bytes = bincode::serialize(&self.state.unwrap()).unwrap();
         match self.stream.as_ref() {
@@ -115,9 +126,7 @@ impl App {
     }
 }
 
-use gilrs::{Axis, Button, EventType};
-
-fn main() {
+fn main2() {
     println!("Initializing a client...");
     env_logger::init();
     let settings = Settings::new().unwrap();
@@ -211,7 +220,7 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
-    match TcpStream::connect("192.168.88.251:8081") {
+    match TcpStream::connect("192.168.88.241:8081") {
         Ok(mut stream) => {
             println!("Successfully connected to server in port 8081");
             let mut buffer: Vec<u8> = Vec::new();
@@ -267,6 +276,7 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
                         println!("Failed to receive data: {}", e);
                     }
                 }
+                //std::thread::sleep(Duration::from_millis(100));
             }
         }
         Err(e) => {
@@ -277,13 +287,7 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
     println!("Terminated.");
 }
 
-#[derive(Debug)]
-struct Message {
-    data: Vec<u8>,
-}
-
-// `Texture::from_image` leaks :(
-fn main_piston() {
+fn main() {
     let mut window: PistonWindow = WindowSettings::new("Hello Piston!", [720, 576])
         .exit_on_esc(true)
         .build()
@@ -345,11 +349,13 @@ fn main_piston() {
                 let img = load_from_memory_with_format(&received.data, ImageFormat::JPEG)
                     .unwrap()
                     .to_rgba();
+                // TODO: https://github.com/PistonDevelopers/piston-examples/blob/master/src/paint.rs#L34
                 match Texture::from_image(ctx, &img, stx) {
                     Ok(txt) => {
-                        draw(&mut window, |c, g, _| {
-                            clear([1.0; 4], g);
-                            image(&txt, c.transform, g);
+                        draw(&mut window, |c, g, device| {
+                            ctx.encoder.flush(device);
+                            piston_window::clear([1.0; 4], g);
+                            piston_window::image(&txt, c.transform, g);
                         });
                         println!("Updated");
                     }
@@ -360,12 +366,8 @@ fn main_piston() {
         }
     }
 
-    th.join();
+    // th.join();
 }
-extern crate image;
-
-use image::load_from_memory_with_format;
-use image::{DynamicImage, ImageFormat, RgbaImage};
 
 fn draw<F, U>(window: &mut PistonWindow, f: F) -> Option<U>
 where
