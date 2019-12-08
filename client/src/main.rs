@@ -2,49 +2,33 @@
 extern crate log;
 extern crate bincode;
 extern crate config;
-extern crate gfx_device_gl;
-extern crate gfx_graphics;
 extern crate gilrs;
 extern crate hidapi;
 extern crate image;
 extern crate piston;
 extern crate piston_window;
 extern crate serde;
-extern crate texture;
-extern crate web_view;
+extern crate twoway;
 
 use common::settings::Settings;
 use common::types::MachineState;
-use gilrs::{Axis, Button, EventType};
-use gilrs::{Event, Gilrs};
-use image::load_from_memory_with_format;
-use image::{DynamicImage, ImageFormat, RgbaImage};
+use gilrs::{Axis, Button, Event, EventType, Gilrs};
+use image::ImageFormat;
 use piston::event_loop::*;
 use piston::input;
 use piston::input::*;
-use piston_window::{
-    Context, EventSettings, Events, G2d, PistonWindow, Texture, Viewport, WindowSettings,
-};
-use serde::{Deserialize, Serialize};
-use std::io::prelude::*;
+use piston_window::*;
+use piston_window::{EventSettings, Events, PistonWindow, Texture, WindowSettings};
 use std::io::{Read, Write};
-use std::mem;
 use std::net::TcpStream;
-use std::net::ToSocketAddrs;
-use std::path::Path;
-use std::ptr;
-use std::str::from_utf8;
 use std::sync::mpsc;
 use std::thread;
-use std::thread::sleep;
 use std::time::Duration;
-use std::time::Instant;
-use texture::{CreateTexture, Format, TextureSettings};
-use web_view::*;
+use texture::TextureSettings;
 
-#[derive(Debug)]
 struct Message {
-    data: Vec<u8>,
+    data: image::DynamicImage,
+    index: u32,
 }
 
 pub struct App {
@@ -126,149 +110,40 @@ impl App {
     }
 }
 
-fn main2() {
-    println!("Initializing a client...");
-    env_logger::init();
-    let settings = Settings::new().unwrap();
-
-    let mut gilrs = Gilrs::new().unwrap();
-    thread::spawn(move || {
-        let mut app = App::new();
-        app.open();
-
-        info!("Starting event loop...");
-        loop {
-            while let Some(Event { id, event, time }) = gilrs.next_event() {
-                let mut state = MachineState {
-                    backward: false,
-                    forward: false,
-                    left: false,
-                    right: false,
-                    lamp_enabled: false,
-                };
-                //println!("New event from {}: {:?}", id, event);
-                match event {
-                    EventType::ButtonPressed(button, code) => match button {
-                        Button::East => {
-                            state.lamp_enabled = true;
-                            println!("lamb enabled");
-                            app.update(state);
-                        }
-                        _ => {}
-                    },
-                    EventType::AxisChanged(button, value, code) => match button {
-                        Axis::LeftStickX => {
-                            if value > 0.9 {
-                                state.right = true;
-                                state.left = false;
-                            } else if value < -0.9 {
-                                state.right = false;
-                                state.left = true;
-                            } else {
-                                state.right = false;
-                                state.left = false;
-                            }
-                            println!("X axis {:?}", value);
-                            app.update(state);
-                        }
-                        _ => {}
-                    },
-                    EventType::ButtonChanged(button, value, code) => match button {
-                        Button::RightTrigger2 => {
-                            state.forward = (value == 1.0);
-                            app.update(state);
-                        }
-                        Button::LeftTrigger2 => {
-                            state.backward = (value == 1.0);
-                            app.update(state);
-                        }
-                        _ => {}
-                    },
-                    EventType::ButtonReleased(button, code) => match button {
-                        Button::East => {
-                            state.lamp_enabled = false;
-                            println!("lamb disabled");
-                            app.update(state);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
-        }
-    });
-
-    web_view::builder()
-        .title("Cat.Hunter")
-        .content(Content::Url(format!(
-            "http://{}:{}",
-            &settings.host, &settings.http_stream_port
-        )))
-        .size(1200, 800)
-        .resizable(true)
-        .debug(true)
-        .user_data(())
-        .invoke_handler(|_webview, _arg| Ok(()))
-        .run()
-        .unwrap();
-}
-
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
 fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
     match TcpStream::connect("192.168.88.241:8081") {
         Ok(mut stream) => {
             println!("Successfully connected to server in port 8081");
             let mut buffer: Vec<u8> = Vec::new();
-            let start_marker: [u8; 2] = [255, 216];
-            let end_marker: [u8; 2] = [255, 217];
-            let start = Instant::now();
-            let mut i = 0;
-
+            let start_of_image: [u8; 2] = [255, 216];
+            let end_of_image: [u8; 2] = [255, 217];
             loop {
                 let mut read_buffer = [0 as u8; 1024];
 
                 match stream.read_exact(&mut read_buffer) {
                     Ok(_) => {
                         buffer.extend_from_slice(&read_buffer);
-
-                        match find_subsequence(&buffer, &end_marker) {
-                            Some(body) => match find_subsequence(&buffer, &start_marker) {
-                                Some(header) => {
-                                    let mut vec2 = buffer.split_off(body + 2);
-                                    let mut data = buffer.split_off(header);
-                                    buffer.clear();
-                                    buffer.extend(vec2);
-                                    i = i + 1;
-                                    sender.send(Message {
-                                        data: data.to_vec(),
-                                    });
-                                    println!(
-                                        "Sended {:?}, Buffer: {:?}, Total frames: {:?}",
-                                        data.len(),
-                                        buffer.len(),
-                                        i
-                                    );
-
-                                    if i % 10 == 0 {
-                                        let duration = start.elapsed();
-                                        let d = duration.as_secs();
-                                        if d != 0 {
-                                            println!(
-                                            "Time elapsed in expensive_function() is: {:?}, FPS: {:?}, att: {:?}",
-                                            duration,
-                                            i / d,
-                                            i,
-                                        );
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            },
+                        match (
+                            twoway::find_bytes(&buffer, &start_of_image),
+                            twoway::find_bytes(&buffer, &end_of_image),
+                        ) {
+                            (Some(soi_marker), Some(eoi_marker)) => {
+                                let rest_buffer = buffer.split_off(eoi_marker + 2);
+                                let image_buffer = buffer.split_off(soi_marker);
+                                let img = image::load_from_memory_with_format(
+                                    &image_buffer,
+                                    ImageFormat::JPEG,
+                                )
+                                .unwrap();
+                                sender
+                                    .send(Message {
+                                        data: img,
+                                        index: 0,
+                                    })
+                                    .unwrap();
+                                buffer.clear();
+                                buffer.extend(rest_buffer);
+                            }
                             _ => {}
                         }
                     }
@@ -276,7 +151,6 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
                         println!("Failed to receive data: {}", e);
                     }
                 }
-                //std::thread::sleep(Duration::from_millis(100));
             }
         }
         Err(e) => {
@@ -288,25 +162,60 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
 }
 
 fn main() {
-    let mut window: PistonWindow = WindowSettings::new("Hello Piston!", [720, 576])
+    println!("Initializing a client...");
+    env_logger::init();
+
+    let width = 800.0;
+    let height = 600.0;
+    let settings = Settings::new().unwrap();
+
+    let mut window: PistonWindow = WindowSettings::new("Cat Hunter", [width, height])
         .exit_on_esc(true)
+        .resizable(false)
         .build()
         .unwrap();
     println!("Press C to turn capture cursor on/off");
-    let (tx, rx) = mpsc::channel();
-    let th = thread::spawn(move || {
+    let (tx, rx): (
+        std::sync::mpsc::Sender<Message>,
+        std::sync::mpsc::Receiver<Message>,
+    ) = mpsc::channel();
+    thread::spawn(move || {
         listen_stream(tx);
     });
 
     let mut gilrs = Gilrs::new().unwrap();
     let mut events = Events::new(EventSettings::new().lazy(false));
-    let ctx = &mut window.create_texture_context();
-    let stx = &TextureSettings::new();
-    let mut run = true;
+    let mut canvas = image::ImageBuffer::new(width as u32, height as u32);
+    let mut texture_context = piston_window::TextureContext {
+        factory: window.factory.clone(),
+        encoder: window.factory.create_command_buffer().into(),
+    };
+    let mut texture: piston_window::G2dTexture =
+        Texture::from_image(&mut texture_context, &canvas, &TextureSettings::new()).unwrap();
 
-    while run {
+    let mut app = App::new();
+    app.open();
+
+    loop {
         match events.next(&mut window) {
             Some(e) => {
+                if let Some(_) = e.render_args() {
+                    let ww = window.size().width;
+                    let wh = window.size().height;
+                    texture.update(&mut texture_context, &canvas).unwrap();
+                    window.draw_2d(&e, |c, g, device| {
+                        texture_context.encoder.flush(device);
+                        piston_window::clear([1.0; 4], g);
+                        piston_window::image(
+                            &texture,
+                            c.transform
+                                .trans(0.0, 0.0)
+                                .scale(1.0 * (ww / width), 1.0 * (wh / height)),
+                            g,
+                        );
+                    });
+                }
+
                 if let Some(input::Button::Keyboard(key)) = e.press_args() {
                     if key == input::Key::C {
                         println!("Turned capture cursor on");
@@ -318,8 +227,7 @@ fn main() {
                     println!("Scancode {:?}", args.scancode);
                 }
                 if let Some(_) = e.close_args() {
-                    println!("Exited!!");
-                    run = false;
+                    println!("Exited!");
                     break;
                 }
                 if let Some(button) = e.release_args() {
@@ -341,51 +249,64 @@ fn main() {
         }
 
         while let Some(Event { id, event, time }) = gilrs.next_event() {
-            println!("{:?} New event from {}: {:?}", time, id, event);
+            let mut state = MachineState {
+                backward: false,
+                forward: false,
+                left: false,
+                right: false,
+                lamp_enabled: false,
+            };
+            match event {
+                EventType::ButtonPressed(button, code) => match button {
+                    Button::East => {
+                        state.lamp_enabled = true;
+                        app.update(state);
+                    }
+                    _ => {}
+                },
+                EventType::AxisChanged(button, value, code) => match button {
+                    Axis::LeftStickX => {
+                        if value > 0.9 {
+                            state.right = true;
+                            state.left = false;
+                        } else if value < -0.9 {
+                            state.right = false;
+                            state.left = true;
+                        } else {
+                            state.right = false;
+                            state.left = false;
+                        }
+                        app.update(state);
+                    }
+                    _ => {}
+                },
+                EventType::ButtonChanged(button, value, code) => match button {
+                    Button::RightTrigger2 => {
+                        state.forward = value == 1.0;
+                        app.update(state);
+                    }
+                    Button::LeftTrigger2 => {
+                        state.backward = value == 1.0;
+                        app.update(state);
+                    }
+                    _ => {}
+                },
+                EventType::ButtonReleased(button, code) => match button {
+                    Button::East => {
+                        state.lamp_enabled = false;
+                        app.update(state);
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
         }
 
         match rx.try_recv() {
-            Ok(received) => {
-                let img = load_from_memory_with_format(&received.data, ImageFormat::JPEG)
-                    .unwrap()
-                    .to_rgba();
-                // TODO: https://github.com/PistonDevelopers/piston-examples/blob/master/src/paint.rs#L34
-                match Texture::from_image(ctx, &img, stx) {
-                    Ok(txt) => {
-                        draw(&mut window, |c, g, device| {
-                            ctx.encoder.flush(device);
-                            piston_window::clear([1.0; 4], g);
-                            piston_window::image(&txt, c.transform, g);
-                        });
-                        println!("Updated");
-                    }
-                    _ => println!("Failed !!!11"),
-                }
+            Ok(img) => {
+                canvas = img.data.rotate90().to_rgba();
             }
-            Err(_) => {}
+            _ => {}
         }
     }
-
-    // th.join();
-}
-
-fn draw<F, U>(window: &mut PistonWindow, f: F) -> Option<U>
-where
-    F: FnOnce(Context, &mut G2d, &mut gfx_device_gl::Device) -> U,
-{
-    // window.window.make_current();
-    let device = &mut window.device;
-    let res = window.g2d.draw(
-        &mut window.encoder,
-        &window.output_color,
-        &window.output_stencil,
-        Viewport {
-            draw_size: [640, 480],
-            rect: [1000, 1000, 1000, 1000],
-            window_size: [640.0, 480.0],
-        },
-        |c, g| f(c, g, device),
-    );
-    window.encoder.flush(device);
-    None
 }

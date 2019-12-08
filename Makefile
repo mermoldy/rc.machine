@@ -9,15 +9,11 @@ default: run
 
 run:
 	cargo fmt
-	RUST_BACKTRACE=full RUST_LOG=debug cargo run
-
-run_release:
-	cargo fmt
 	RUST_BACKTRACE=full RUST_LOG=debug cargo run --release
 
 build:
 	cargo fmt
-	RUST_BACKTRACE=full RUST_LOG=debug cargo build
+	RUST_BACKTRACE=full RUST_LOG=debug cargo build --release
 
 # Setup ARMv7 Toolchain for MacOS:
 # - brew install arm-linux-gnueabihf-binutils

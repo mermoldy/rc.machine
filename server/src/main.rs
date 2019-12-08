@@ -3,8 +3,10 @@ extern crate log;
 extern crate bincode;
 extern crate log4rs;
 extern crate log_panics;
+extern crate rscam;
 extern crate signal_hook;
 extern crate sysfs_gpio;
+
 use common::settings::Settings;
 use common::types::MachineState;
 use log::LevelFilter;
@@ -154,6 +156,81 @@ impl Machine {
     }
 }
 
+fn listen_camera(sender: std::sync::mpsc::Sender<std::vec::Vec<u8>>) {
+    let mut camera = rscam::new("/dev/video0").unwrap();
+    camera
+        .start(&rscam::Config {
+            interval: (1, 20),
+            resolution: (600, 800),
+            format: b"MJPG",
+            nbuffers: 20,
+            field: rscam::FIELD_NONE,
+        })
+        .unwrap();
+
+    loop {
+        match camera.capture() {
+            Ok(mut frame) => match sender.send(frame.to_vec()) {
+                Err(e) => {
+                    error!("Failed to send a frame: {:?}.", e);
+                }
+                _ => {}
+            },
+            Err(e) => {
+                error!("Unable to take picture: {:?}", e);
+            }
+        }
+        std::thread::sleep_ms(42);
+    }
+}
+
+fn stream_video() {
+    let (tx, rx): (
+        std::sync::mpsc::Sender<std::vec::Vec<u8>>,
+        std::sync::mpsc::Receiver<std::vec::Vec<u8>>,
+    ) = mpsc::channel();
+
+    thread::spawn(move || {
+        listen_camera(tx);
+    });
+
+    let listener = TcpListener::bind("0.0.0.0:8081").unwrap();
+    info!("Listening started, ready to accept on 8081...");
+
+    for new_stream in listener.incoming() {
+        match new_stream {
+            Ok(mut stream) => match stream.peer_addr() {
+                Ok(addr) => {
+                    info!("Connected a new client {:?}...", addr);
+                    loop {
+                        match rx.recv_timeout(Duration::from_millis(42)) {
+                            Ok(mut frame) => match stream.write(&frame) {
+                                Ok(size) => {
+                                    debug!("Written {:?} bytes", size);
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to write: {:?}. Closing connection {:?}.",
+                                        e, addr
+                                    );
+                                    break;
+                                }
+                            },
+                            Err(e) => {
+                                error!("Unable to take picture: {:?}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {}
+            },
+            Err(e) => {
+                error!("Cannot connect a new client: {:?}", e);
+            }
+        }
+    }
+}
+
 fn main() {
     println!("Starting...");
     log_panics::init();
@@ -188,7 +265,9 @@ fn main() {
     thread::spawn(move || {
         listen_states(tx);
     });
-
+    thread::spawn(move || {
+        stream_video();
+    });
     println!("Started");
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {

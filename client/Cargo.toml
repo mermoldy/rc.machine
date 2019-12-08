@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 common = { path = "../common" }
-web-view = "0.5.4"
 hidapi = "1.0.1"
 config = "0.9"
 serde = { version = "1.0", features = ["derive"] }
@@ -16,9 +15,5 @@ env_logger = "0.7.1"
 piston = "0.49.0"
 piston_window = "0.105.0"
 gilrs = "0.7.2"
-gfx_device_gl = "0.16.2"
-piston2d-gfx_graphics = "0.66.0"
 image = "0.22.3"
-piston-texture = "0.8.0"
-gfx = "0.18.2"
-vecmath = "*"
+twoway = "0.2.1"
