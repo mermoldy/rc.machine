@@ -50,13 +50,15 @@ impl App {
         let url = format!("{}:{}", &self.settings.host, &self.settings.ctrl_port);
         info!("Connecting to {:?}...", url);
         let addr: std::net::SocketAddr = url.parse().expect("Unable to parse socket address");
-        match TcpStream::connect_timeout(&addr, Duration::from_millis(100)) {
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
             Ok(stream) => {
                 info!("Successfully connected to server in port 3333");
+                stream.set_nodelay(true).expect("set_nodelay call failed");
+                stream.set_ttl(5).expect("set_ttl call failed");
                 self.stream = Some(stream);
             }
             Err(e) => {
-                error!("Failed to connect: {}", e);
+                error!("Failed to connect: {}. URL: {}", e, url);
             }
         }
     }
@@ -80,13 +82,27 @@ impl App {
             }
         }
     }
-    fn update(&mut self, input: MachineState) {
+    fn update(&mut self, input: MachineState) -> bool {
         let s = Some(input);
         if self.state != s {
             self.state = s;
             self.push();
+            true
         } else {
-            debug!("No chanhes in state");
+            false
+        }
+    }
+
+    fn get_latest_state(&mut self) -> MachineState {
+        match self.state {
+            Some(state) => state,
+            None => MachineState {
+                backward: false,
+                forward: false,
+                left: false,
+                right: false,
+                lamp_enabled: false,
+            },
         }
     }
 
@@ -96,6 +112,17 @@ impl App {
             Some(mut stream) => match stream.write(&bytes) {
                 Ok(written) => {
                     debug!("Written {:?} bytes", written);
+
+                    let mut data = [0 as u8; 1];
+                    match stream.read_exact(&mut data) {
+                        Ok(size) => {
+                            debug!("Readed resp {:?} bytes", data);
+                        }
+                        Err(e) => {
+                            error!("Failed to read: {}. Retrying push operation...", e);
+                            self.push();
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to write: {:?}", e);
@@ -130,17 +157,19 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
                             (Some(soi_marker), Some(eoi_marker)) => {
                                 let rest_buffer = buffer.split_off(eoi_marker + 2);
                                 let image_buffer = buffer.split_off(soi_marker);
-                                let img = image::load_from_memory_with_format(
+                                match image::load_from_memory_with_format(
                                     &image_buffer,
                                     ImageFormat::JPEG,
-                                )
-                                .unwrap();
-                                sender
-                                    .send(Message {
-                                        data: img,
-                                        index: 0,
-                                    })
-                                    .unwrap();
+                                ) {
+                                    Ok(img) => {
+                                        let _ = sender.send(Message {
+                                            data: img,
+                                            index: 0,
+                                        });
+                                    }
+                                    Err(e) => error!("Failed to decode an image: {:?}", e),
+                                }
+
                                 buffer.clear();
                                 buffer.extend(rest_buffer);
                             }
@@ -149,6 +178,7 @@ fn listen_stream(sender: std::sync::mpsc::Sender<Message>) {
                     }
                     Err(e) => {
                         println!("Failed to receive data: {}", e);
+                        std::thread::sleep(Duration::from_millis(100));
                     }
                 }
             }
@@ -197,6 +227,8 @@ fn main() {
     app.open();
 
     loop {
+        let mut state = app.get_latest_state();
+
         match events.next(&mut window) {
             Some(e) => {
                 if let Some(_) = e.render_args() {
@@ -217,45 +249,48 @@ fn main() {
                 }
 
                 if let Some(input::Button::Keyboard(key)) = e.press_args() {
-                    if key == input::Key::C {
-                        println!("Turned capture cursor on");
+                    if key == input::Key::L {
+                        state.lamp_enabled = !state.lamp_enabled;
                     }
-
-                    println!("Pressed keyboard key '{:?}'", key);
+                    if key == input::Key::Up {
+                        state.forward = true;
+                    }
+                    if key == input::Key::Down {
+                        state.backward = true;
+                    }
+                    if key == input::Key::Right {
+                        state.right = true;
+                    }
+                    if key == input::Key::Left {
+                        state.left = true;
+                    }
+                    info!("Pressed keyboard key '{:?}'", key);
                 }
-                if let Some(args) = e.button_args() {
-                    println!("Scancode {:?}", args.scancode);
+                if let Some(input::Button::Keyboard(key)) = e.release_args() {
+                    if key == input::Key::Up {
+                        state.forward = false;
+                    }
+                    if key == input::Key::Down {
+                        state.backward = false;
+                    }
+                    if key == input::Key::Right {
+                        state.right = false;
+                    }
+                    if key == input::Key::Left {
+                        state.left = false;
+                    }
+                    info!("Released keyboard key '{:?}'", key);
                 }
                 if let Some(_) = e.close_args() {
-                    println!("Exited!");
+                    debug!("Exiting...");
                     break;
                 }
-                if let Some(button) = e.release_args() {
-                    match button {
-                        input::Button::Keyboard(key) => {
-                            println!("Released keyboard key '{:?}'", key)
-                        }
-                        input::Button::Mouse(button) => {
-                            println!("Released mouse button '{:?}'", button)
-                        }
-                        input::Button::Controller(button) => {
-                            println!("Released controller button '{:?}'", button)
-                        }
-                        input::Button::Hat(hat) => println!("Released controller hat `{:?}`", hat),
-                    }
-                }
+                app.update(state);
             }
             None => {}
         }
 
         while let Some(Event { id, event, time }) = gilrs.next_event() {
-            let mut state = MachineState {
-                backward: false,
-                forward: false,
-                left: false,
-                right: false,
-                lamp_enabled: false,
-            };
             match event {
                 EventType::ButtonPressed(button, code) => match button {
                     Button::East => {
@@ -266,10 +301,10 @@ fn main() {
                 },
                 EventType::AxisChanged(button, value, code) => match button {
                     Axis::LeftStickX => {
-                        if value > 0.9 {
+                        if value > 0.5 {
                             state.right = true;
                             state.left = false;
-                        } else if value < -0.9 {
+                        } else if value < -0.5 {
                             state.right = false;
                             state.left = true;
                         } else {
@@ -282,11 +317,11 @@ fn main() {
                 },
                 EventType::ButtonChanged(button, value, code) => match button {
                     Button::RightTrigger2 => {
-                        state.forward = value == 1.0;
+                        state.forward = value > 0.5;
                         app.update(state);
                     }
                     Button::LeftTrigger2 => {
-                        state.backward = value == 1.0;
+                        state.backward = value > 0.5;
                         app.update(state);
                     }
                     _ => {}

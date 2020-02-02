@@ -39,13 +39,6 @@ restart:
 
 # Setup:
 # raspberrypi 🍓 ➜ ~ sudo usermod -a -G systemd-journal mermoldy
-sync_run:
-	@echo "Starring cat.hunter server on $(URL)..."
-	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "cd /opt/cat.hunter && sudo  ./server"
-	@echo "Done"
-
-# Setup:
-# raspberrypi 🍓 ➜ ~ sudo usermod -a -G systemd-journal mermoldy
 tail:
 	@echo "Starring cat.hunter server on $(URL)..."
 	ssh -t -p $(SSH_PORT) $(USER)@$(URL) "tail -f /var/log/cat.hunter.log -n 120"

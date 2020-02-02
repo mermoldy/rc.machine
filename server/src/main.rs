@@ -172,7 +172,8 @@ fn listen_camera(sender: std::sync::mpsc::Sender<std::vec::Vec<u8>>) {
         match camera.capture() {
             Ok(mut frame) => match sender.send(frame.to_vec()) {
                 Err(e) => {
-                    error!("Failed to send a frame: {:?}.", e);
+                    error!("Failed to send a frame: {:?}. Exiting...", e);
+                    break;
                 }
                 _ => {}
             },
@@ -185,15 +186,6 @@ fn listen_camera(sender: std::sync::mpsc::Sender<std::vec::Vec<u8>>) {
 }
 
 fn stream_video() {
-    let (tx, rx): (
-        std::sync::mpsc::Sender<std::vec::Vec<u8>>,
-        std::sync::mpsc::Receiver<std::vec::Vec<u8>>,
-    ) = mpsc::channel();
-
-    thread::spawn(move || {
-        listen_camera(tx);
-    });
-
     let listener = TcpListener::bind("0.0.0.0:8081").unwrap();
     info!("Listening started, ready to accept on 8081...");
 
@@ -202,11 +194,20 @@ fn stream_video() {
             Ok(mut stream) => match stream.peer_addr() {
                 Ok(addr) => {
                     info!("Connected a new client {:?}...", addr);
+
+                    let (tx, rx): (
+                        std::sync::mpsc::Sender<std::vec::Vec<u8>>,
+                        std::sync::mpsc::Receiver<std::vec::Vec<u8>>,
+                    ) = mpsc::channel();
+                    let t = thread::spawn(move || {
+                        listen_camera(tx);
+                    });
+
                     loop {
                         match rx.recv_timeout(Duration::from_millis(42)) {
                             Ok(mut frame) => match stream.write(&frame) {
                                 Ok(size) => {
-                                    debug!("Written {:?} bytes", size);
+                                    //debug!("Written {:?} bytes", size);
                                 }
                                 Err(e) => {
                                     error!(
@@ -216,11 +217,13 @@ fn stream_video() {
                                     break;
                                 }
                             },
-                            Err(e) => {
-                                error!("Unable to take picture: {:?}", e);
-                            }
+                            Err(e) => {}
                         }
                     }
+                    info!("Stopping camera stream...");
+                    drop(rx);
+                    t.join();
+                    info!("Stopped camera stream");
                 }
                 Err(e) => {}
             },
@@ -268,6 +271,7 @@ fn main() {
     thread::spawn(move || {
         stream_video();
     });
+
     println!("Started");
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -289,11 +293,16 @@ fn listen_states(sender: std::sync::mpsc::Sender<MachineState>) {
     let settings = Settings::new().unwrap();
     let listener = TcpListener::bind(format!("0.0.0.0:{}", &settings.ctrl_port)).unwrap();
     info!("Server listening on port {:?}", &settings.ctrl_port);
+    listener.set_ttl(5).expect("could not set TTL");
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 info!("New connection: {}", stream.peer_addr().unwrap());
+
+                stream.set_nodelay(true).expect("set_nodelay call failed");
+                stream.set_ttl(5).expect("could not set TTL");
+
                 handle_client(stream, &sender);
             }
             Err(e) => {
@@ -318,6 +327,8 @@ fn handle_client(mut stream: TcpStream, sender: &std::sync::mpsc::Sender<Machine
                 match bincode::deserialize::<MachineState>(&data[0..size]) {
                     Ok(state) => {
                         sender.send(state);
+                        let b: [u8; 1] = [1];
+                        stream.write(&b);
                     }
                     _ => {
                         error!("Failed to deserialize incoming data");
