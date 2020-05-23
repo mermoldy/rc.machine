@@ -10,7 +10,7 @@ WorkingDirectory=/opt/rc.machine/
 Type=simple
 Restart=always
 RemainAfterExit=yes
-User=rc-user
+User=root
 ExecStart=server
 Environment=RUST_LOG=debug
 Environment=RUST_BACKTRACE=full

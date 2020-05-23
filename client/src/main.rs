@@ -56,7 +56,13 @@ fn main() {
     };
 
     info!("Initializing a video stream...");
-    app.set_log("Initializing a video stream...");
+    app.set_log(
+        format!(
+            "Initializing a video stream ({}:{})...",
+            settings.connection.host, settings.connection.video_port
+        )
+        .as_str(),
+    );
     let video_stream = VideoStream::new(settings.clone());
     let (tx, rx): (
         std::sync::mpsc::Sender<VideoFrame>,

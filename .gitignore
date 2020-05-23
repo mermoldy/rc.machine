@@ -11,5 +11,8 @@
 /target
 **/*.rs.bk
 
+# Local configuration
+.env
+
 # IDEs
 .vscode
