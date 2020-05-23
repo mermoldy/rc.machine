@@ -11,7 +11,6 @@ use std::time::Duration;
 
 pub struct VideoStream {
     settings: settings::Settings,
-    is_connected: bool,
 }
 
 pub struct VideoFrame {
@@ -20,10 +19,7 @@ pub struct VideoFrame {
 
 impl VideoStream {
     pub fn new(settings: settings::Settings) -> VideoStream {
-        VideoStream {
-            settings: settings,
-            is_connected: false,
-        }
+        VideoStream { settings: settings }
     }
 
     pub fn connect(
@@ -35,17 +31,14 @@ impl VideoStream {
             &self.settings.connection.host, &self.settings.connection.video_port
         )
         .parse()
-        .expect("Unable to parse socket address");
+        .expect("Failed to parse socket address");
         match TcpStream::connect_timeout(&addr, Duration::from_millis(5000)) {
             Ok(mut stream) => {
-                info!("Successfully connected to server in port 8081");
+                info!("Successfully connected to server port {:?}", addr);
                 let mut buffer: Vec<u8> = Vec::new();
                 let start_of_image: [u8; 2] = [255, 216];
                 let end_of_image: [u8; 2] = [255, 217];
                 loop {
-                    if !self.is_connected {
-                        break;
-                    }
                     let mut read_buffer = [0 as u8; 1024];
 
                     match stream.read_exact(&mut read_buffer) {

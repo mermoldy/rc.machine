@@ -25,7 +25,7 @@ rustup target add armv7-unknown-linux-musleabihf
 
 ### Install
 
-#### Prepare environment on the remote machine
+Prepare environment on the remote machine
 
 ```console
 sudo mkdir -p /opt/rc.machine
