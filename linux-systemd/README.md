@@ -4,20 +4,26 @@ Systemd script for RC.Machine server.
 
 ## Installation
 
-- Systemd script is configured to run the binary from /opt/rc.machine/.
-- Download the binary. Find the relevant links for the binary at https://github.com/mermoldy/rc.machine/packages.
+- Systemd script is configured to run the binary from ``/opt/rc.machine/``.
+You should prepare the working directory:
 
-## Systemctl
+```console
+sudo mkdir -p /opt/rc.machine
+sudo chown %username% /opt/rc.machine
+```
 
-Download `rc.server.service` in `/etc/systemd/system/`
+- Download the server binary into ``/opt/rc.machine``. Find the relevant links for the binary at <https://github.com/mermoldy/rc.machine/packages> (TODO).
+
+- Download `rc.server.service` into `/etc/systemd/system/`:
 
 ```console
 cd /etc/systemd/system/
 sudo curl -O https://raw.githubusercontent.com/mermoldy/rc.machine/master/linux-systemd/rc.server.service
 ```
 
-### Enable startup on boot
+- Start the service:
 
 ```console
-systemctl enable rc.server.service
+sudo systemctl enable rc.server.service  # enables startup on boot
+sudo systemctl start rc.server.service
 ```
