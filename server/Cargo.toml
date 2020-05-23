@@ -2,7 +2,6 @@
 name = "server"
 version = "0.1.0"
 authors = ["Serhii Babak <mermoldy@gmail.com>"]
-edition = "2018"
 
 [dependencies]
 config = "0.9"

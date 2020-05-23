@@ -1,17 +1,17 @@
 #
-# /etc/systemd/system/cat-hunter.service
+# /etc/systemd/system/rc.client.service
 #
 [Unit]
-Description=Cat Hunter
+Description=RC.Machine Client
 Requires=network-online.target
 
 [Service]
-WorkingDirectory=/opt/cat.hunter/
+WorkingDirectory=/opt/rc.machine/
 Type=simple
 Restart=always
 RemainAfterExit=yes
-User=root
-ExecStart=/opt/cat.hunter/server
+User=rc-user
+ExecStart=client
 Environment=RUST_LOG=debug
 Environment=RUST_BACKTRACE=full
 

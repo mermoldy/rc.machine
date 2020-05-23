@@ -1,11 +1,19 @@
-use config::{Config, ConfigError, File};
-use serde::Deserialize;
+extern crate config;
+extern crate serde;
 
-#[derive(Debug, Deserialize)]
-pub struct Settings {
+use self::config::{Config, ConfigError, File};
+use self::serde::Deserialize;
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Connection {
     pub host: String,
-    pub ctrl_port: u16,
-    pub http_stream_port: u16,
+    pub state_port: u16,
+    pub video_port: u16,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct Settings {
+    pub connection: Connection,
 }
 
 impl Settings {

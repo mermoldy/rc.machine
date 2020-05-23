@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate log;
 extern crate bincode;
+extern crate common;
 extern crate log4rs;
 extern crate log_panics;
 extern crate rscam;
@@ -247,7 +248,7 @@ fn main() {
         .encoder(Box::new(PatternEncoder::new(
             "[{d(%Y-%m-%d %H:%M:%S)} {l} {t}] {m}{n}",
         )))
-        .build("/var/log/cat.hunter.log")
+        .build("/var/log/rc.server.log")
         .unwrap();
 
     let config = Config::builder()
@@ -291,8 +292,15 @@ fn main() {
 
 fn listen_states(sender: std::sync::mpsc::Sender<MachineState>) {
     let settings = Settings::new().unwrap();
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", &settings.ctrl_port)).unwrap();
-    info!("Server listening on port {:?}", &settings.ctrl_port);
+    let listener = TcpListener::bind(format!(
+        "{}:{}",
+        &settings.connection.host, &settings.connection.state_port
+    ))
+    .unwrap();
+    info!(
+        "Server listening on port {:?}",
+        &settings.connection.state_port
+    );
     listener.set_ttl(5).expect("could not set TTL");
 
     for stream in listener.incoming() {

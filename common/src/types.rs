@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+extern crate serde;
+
+use self::serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Serialize, Deserialize, Copy, Clone)]

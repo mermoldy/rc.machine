@@ -1,3 +1,8 @@
+[connection]
 host = "192.168.88.241"
-ctrl_port = 20301
-http_stream_port = 8081
+state_port = 20301
+video_port = 8081
+
+[watchdog]
+heartbeat_interval = 150  # how often to send a heart beat in milliseconds
+missed_beats = 6  # how many beats may be missed before remote car is forced to stop
