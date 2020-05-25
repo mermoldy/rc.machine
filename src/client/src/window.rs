@@ -51,7 +51,7 @@ impl Window {
                 .exit_on_esc(true)
                 .build()?;
 
-        let ttf_assets = find_folder::Search::ParentsThenKids(3, 3).for_folder("assets/ttf")?;
+        let ttf_assets = find_folder::Search::ParentsThenKids(1, 4).for_folder("assets/ttf")?;
         let glyphs = window.load_font(ttf_assets.join("FiraCode-Medium.ttf"))?;
 
         let canvas = image::ImageBuffer::new(width as u32, height as u32);
