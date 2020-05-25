@@ -8,7 +8,7 @@ extern crate rscam;
 extern crate signal_hook;
 extern crate sysfs_gpio;
 
-use common::settings::Settings;
+use common::settings;
 use common::types::MachineState;
 use log::LevelFilter;
 use log4rs::append::file::FileAppender;
@@ -157,12 +157,15 @@ impl Machine {
     }
 }
 
-fn listen_camera(sender: std::sync::mpsc::Sender<std::vec::Vec<u8>>) {
-    let mut camera = rscam::new("/dev/video0").unwrap();
+fn listen_camera(
+    sender: std::sync::mpsc::Sender<std::vec::Vec<u8>>,
+    video_settings: settings::Video,
+) {
+    let mut camera = rscam::new(video_settings.device.as_str()).unwrap();
     camera
         .start(&rscam::Config {
             interval: (1, 20),
-            resolution: (600, 800),
+            resolution: video_settings.resolution,
             format: b"MJPG",
             nbuffers: 20,
             field: rscam::FIELD_NONE,
@@ -186,9 +189,10 @@ fn listen_camera(sender: std::sync::mpsc::Sender<std::vec::Vec<u8>>) {
     }
 }
 
-fn stream_video() {
-    let listener = TcpListener::bind("0.0.0.0:8081").unwrap();
-    info!("Listening started, ready to accept on 8081...");
+fn stream_video(settings: settings::Settings) {
+    let url = format!("0.0.0.0:{}", settings.connection.video_port);
+    let listener = TcpListener::bind(&url).unwrap();
+    info!("Listening started, ready to accept on {}...", url.as_str());
 
     for new_stream in listener.incoming() {
         match new_stream {
@@ -200,8 +204,10 @@ fn stream_video() {
                         std::sync::mpsc::Sender<std::vec::Vec<u8>>,
                         std::sync::mpsc::Receiver<std::vec::Vec<u8>>,
                     ) = mpsc::channel();
+
+                    let video_settings = settings.video.clone();
                     let t = thread::spawn(move || {
-                        listen_camera(tx);
+                        listen_camera(tx, video_settings);
                     });
 
                     loop {
@@ -242,6 +248,14 @@ fn main() {
     let mut machine = Machine::new();
     machine.export();
 
+    let settings = match settings::Settings::new() {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to initialize a settings: {:?}", e);
+            std::process::exit(2);
+        }
+    };
+
     let signals = Signals::new(&[SIGINT, SIGTERM]).unwrap();
 
     let logfile = FileAppender::builder()
@@ -266,11 +280,14 @@ fn main() {
         std::sync::mpsc::Receiver<MachineState>,
     ) = mpsc::channel();
 
+    let state_settings = settings.clone();
     thread::spawn(move || {
-        listen_states(tx);
+        listen_states(tx, state_settings);
     });
+
+    let video_settings = settings.clone();
     thread::spawn(move || {
-        stream_video();
+        stream_video(video_settings);
     });
 
     println!("Started");
@@ -290,13 +307,10 @@ fn main() {
     }
 }
 
-fn listen_states(sender: std::sync::mpsc::Sender<MachineState>) {
-    let settings = Settings::new().unwrap();
-    let listener = TcpListener::bind(format!(
-        "{}:{}",
-        &settings.connection.host, &settings.connection.state_port
-    ))
-    .unwrap();
+fn listen_states(sender: std::sync::mpsc::Sender<MachineState>, settings: settings::Settings) {
+    let settings = settings::Settings::new().unwrap();
+    let listener =
+        TcpListener::bind(format!("0.0.0.0:{}", &settings.connection.state_port)).unwrap();
     info!(
         "Server listening on port {:?}",
         &settings.connection.state_port

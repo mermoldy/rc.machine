@@ -21,10 +21,14 @@ SERVER_TARGET=armv7-unknown-linux-musleabihf
 #
 #  Run GUI client on the local machine
 #
-default: run
-run:
+default: run_optimized
+run_optimized:
 	cargo fmt
 	RUST_BACKTRACE=full RUST_LOG=client=debug cargo run --release
+
+run:
+	cargo fmt
+	RUST_BACKTRACE=full RUST_LOG=client=debug cargo run
 
 # #
 # Server tasks (via SSH)

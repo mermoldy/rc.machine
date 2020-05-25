@@ -5,6 +5,7 @@ use common::types::MachineState;
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 pub struct RemoteState {
@@ -31,21 +32,26 @@ impl RemoteState {
     }
 
     pub fn open(&mut self) {
-        let url = format!(
+        let addrs_iter = format!(
             "{}:{}",
             &self.settings.connection.host, &self.settings.connection.state_port
-        );
-        info!("Connecting to {:?}...", url);
-        let addr: std::net::SocketAddr = url.parse().expect("Unable to parse socket address");
-        match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
-            Ok(stream) => {
-                info!("Successfully connected to server in port 3333");
-                stream.set_nodelay(true).expect("set_nodelay call failed");
-                stream.set_ttl(5).expect("set_ttl call failed");
-                self.stream = Some(stream);
-            }
-            Err(e) => {
-                error!("Failed to connect: {}. URL: {}", e, url);
+        )
+        .to_socket_addrs()
+        .unwrap();
+
+        for addr in addrs_iter {
+            info!("Connecting to {:?}...", addr);
+
+            match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
+                Ok(stream) => {
+                    info!("Successfully connected to server in port 3333");
+                    stream.set_nodelay(true).expect("set_nodelay call failed");
+                    stream.set_ttl(5).expect("set_ttl call failed");
+                    self.stream = Some(stream);
+                }
+                Err(e) => {
+                    error!("Failed to connect: {}. Address: {}", e, addr);
+                }
             }
         }
     }
@@ -105,13 +111,13 @@ impl RemoteState {
         }
     }
 
-    pub fn push(&mut self) -> bool {
+    pub fn push(&mut self) -> Option<MachineState> {
         if self.dirty {
             self.push_state();
             self.dirty = false;
-            true
+            Some(self.state)
         } else {
-            false
+            None
         }
     }
 
