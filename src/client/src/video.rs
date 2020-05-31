@@ -15,7 +15,7 @@ pub struct VideoStream {
 }
 
 pub struct VideoFrame {
-    pub data: image::DynamicImage,
+    pub frame: image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
 }
 
 impl VideoStream {
@@ -59,7 +59,9 @@ impl VideoStream {
                                             ImageFormat::Jpeg,
                                         ) {
                                             Ok(img) => {
-                                                let _ = sender.send(VideoFrame { data: img });
+                                                let _ = sender.send(VideoFrame {
+                                                    frame: img.rotate90().to_rgb(),
+                                                });
                                             }
                                             Err(e) => error!("Failed to decode an image: {:?}", e),
                                         }

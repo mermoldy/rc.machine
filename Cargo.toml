@@ -2,7 +2,7 @@
 members = ["src/server", "src/client", "src/common"]
 default-members = ["src/client"]
 
-# [profile.release]
-# opt-level = 3
+[profile.release]
+opt-level = 3
 # lto = true
-# codegen-units = 1
+codegen-units = 1

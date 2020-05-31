@@ -30,6 +30,9 @@ run:
 	cargo fmt
 	RUST_BACKTRACE=full RUST_LOG=client=debug cargo run
 
+watch:
+	RUST_BACKTRACE=full RUST_LOG=client=debug cargo watch -x run
+
 # #
 # Server tasks (via SSH)
 # #

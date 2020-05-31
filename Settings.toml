@@ -11,7 +11,7 @@ missed_beats = 6
 
 [video]
 # Height and width of frame.
-resolution = [600, 900]
+resolution = [600, 800]
 framerate = 60  # FPS
 device = "/dev/video0"
 
