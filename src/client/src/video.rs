@@ -31,9 +31,7 @@ impl VideoStream {
             "{}:{}",
             &self.settings.connection.host, &self.settings.connection.video_port
         )
-        .to_socket_addrs()
-        .unwrap();
-
+        .to_socket_addrs()?;
         for addr in addrs_iter {
             match TcpStream::connect_timeout(&addr, Duration::from_millis(5000)) {
                 Ok(mut stream) => {

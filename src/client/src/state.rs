@@ -145,6 +145,7 @@ impl RemoteState {
                 Err(e) => {
                     error!("Failed to write: {:?}", e);
                     self.open();
+                    self.push_state();
                 }
             },
             None => {

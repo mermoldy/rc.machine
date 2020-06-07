@@ -23,11 +23,11 @@ SERVER_TARGET=armv7-unknown-linux-musleabihf
 #
 default: run_optimized
 run_optimized:
-	cargo fmt
+	# cargo fmt
 	RUST_BACKTRACE=full RUST_LOG=client=debug cargo run --release
 
 run:
-	cargo fmt
+	# cargo fmt
 	RUST_BACKTRACE=full RUST_LOG=client=debug cargo run
 
 watch:

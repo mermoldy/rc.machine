@@ -8,20 +8,16 @@ pub mod window;
 #[macro_use]
 extern crate log;
 extern crate common;
-extern crate simple_logger;
+extern crate env_logger;
 
 use common::settings;
-use druid::{AppLauncher, WindowDesc};
+use druid::{AppLauncher, LocalizedString, WindowDesc};
 
-// use gamepad::Gamepad;
-// use state::RemoteState;
-// use std::sync::mpsc;
-// use std::thread;
-//use video::{VideoFrame, VideoStream};
+// icons: https://github.com/derekdreery/druid-material-icons
 
-pub fn main2() {
+pub fn main() {
     println!("Initializing a logger...");
-    simple_logger::init().unwrap();
+    env_logger::init();
 
     info!("Initializing a settings...");
     let settings = match settings::Settings::new() {
@@ -32,7 +28,11 @@ pub fn main2() {
         }
     };
 
-    let main_window = WindowDesc::new(views::build_start_page).window_size((700.0, 540.0));
+    let main_window = WindowDesc::new(views::build_main_page)
+        .title(LocalizedString::new("app-title").with_placeholder("RC.Machine"))
+        .window_size((700.0, 540.0))
+        .with_min_size((700.0, 540.0));
+
     let application = AppLauncher::with_window(main_window);
     let delegate = views::Delegate {
         eventsink: application.get_external_handle(),
@@ -43,116 +43,4 @@ pub fn main2() {
         .delegate(delegate)
         .launch(views::AppState::default())
         .expect("Application launch failed.");
-}
-
-pub fn main() {
-    example::main()
-}
-
-mod example {
-    use druid::im::{vector, Vector};
-    use druid::lens::{self, LensExt};
-    use druid::widget::{Button, CrossAxisAlignment, Flex, Label, List, Scroll};
-    use druid::{
-        AppLauncher, Color, Data, Lens, LocalizedString, UnitPoint, Widget, WidgetExt, WindowDesc,
-    };
-
-    #[derive(Clone, Data, Lens)]
-    struct AppData {
-        left: Vector<u32>,
-        right: Vector<u32>,
-    }
-
-    pub fn main() {
-        let main_window = WindowDesc::new(ui_builder)
-            .title(LocalizedString::new("list-demo-window-title").with_placeholder("List Demo"));
-        // Set our initial data
-        let data = AppData {
-            left: vector![1, 2],
-            right: vector![1, 2, 3],
-        };
-        AppLauncher::with_window(main_window)
-            .use_simple_logger()
-            .launch(data)
-            .expect("launch failed");
-    }
-
-    fn ui_builder() -> impl Widget<AppData> {
-        let mut root = Flex::column();
-
-        // Build a button to add children to both lists
-        root.add_child(
-            Button::new("Add")
-                .on_click(|_, data: &mut AppData, _| {
-                    // Add child to left list
-                    let value = data.left.len() + 1;
-                    data.left.push_back(value as u32);
-
-                    // Add child to right list
-                    let value = data.right.len() + 1;
-                    data.right.push_back(value as u32);
-                })
-                .fix_height(30.0)
-                .expand_width(),
-        );
-
-        let mut lists = Flex::row().cross_axis_alignment(CrossAxisAlignment::Start);
-
-        // Build a simple list
-        lists.add_flex_child(
-            Scroll::new(List::new(|| {
-                Label::new(|item: &u32, _env: &_| format!("List item #{}", item))
-                    .align_vertical(UnitPoint::LEFT)
-                    .padding(10.0)
-                    .expand()
-                    .height(50.0)
-                    .background(Color::rgb(0.5, 0.5, 0.5))
-            }))
-            .vertical()
-            .lens(AppData::left),
-            1.0,
-        );
-
-        // Build a list with shared data
-        lists.add_flex_child(
-            Scroll::new(List::new(|| {
-                Flex::row()
-                    .with_child(
-                        Label::new(|(_, item): &(Vector<u32>, u32), _env: &_| {
-                            format!("List item #{}", item)
-                        })
-                        .align_vertical(UnitPoint::LEFT),
-                    )
-                    .with_flex_spacer(1.0)
-                    .with_child(
-                        Button::new("Delete")
-                            .on_click(|_ctx, (shared, item): &mut (Vector<u32>, u32), _env| {
-                                // We have access to both child's data and shared data.
-                                // Remove element from right list.
-                                shared.retain(|v| v != item);
-                            })
-                            .fix_size(80.0, 20.0)
-                            .align_vertical(UnitPoint::CENTER),
-                    )
-                    .padding(10.0)
-                    .background(Color::rgb(0.5, 0.0, 0.5))
-                    .fix_height(50.0)
-            }))
-            .vertical()
-            .lens(lens::Id.map(
-                // Expose shared data with children data
-                |d: &AppData| (d.right.clone(), d.right.clone()),
-                |d: &mut AppData, x: (Vector<u32>, Vector<u32>)| {
-                    // If shared data was changed reflect the changes in our AppData
-                    d.right = x.0
-                },
-            )),
-            1.0,
-        );
-
-        root.add_flex_child(lists, 1.0);
-
-        // Mark the widget as needing its layout rects painted
-        root.debug_paint_layout()
-    }
 }

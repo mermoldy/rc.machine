@@ -41,3 +41,8 @@ echo "SSH_USER=%raspberry.port%" >> .env
 # build and upload the server binary
 make sync
 ```
+
+WASM stuff: https://github.com/xi-editor/druid/tree/master/druid/examples/web
+
+see: https://github.com/rustwasm/wasm-pack/pull/736
+cargo install --git https://github.com/boringcactus/wasm-pack --branch=first-class-bins
