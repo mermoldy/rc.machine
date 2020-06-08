@@ -1,8 +1,22 @@
 [connection]
-host = "192.168.88.241"
+host = "raspberrypi.local"
 state_port = 20301
-video_port = 8081
+video_port = 20302
 
-[watchdog]
-heartbeat_interval = 150  # how often to send a heart beat in milliseconds
-missed_beats = 6  # how many beats may be missed before remote car is forced to stop
+[heartbeat]
+# how often to send a heart beat in milliseconds
+interval = 150
+# how many beats may be missed before remote car is forced to stop
+missed_beats = 6
+
+[video]
+# Height and width of frame.
+resolution = [600, 800]
+framerate = 60  # FPS
+device = "/dev/video0"
+
+dynamic_framerate = true
+min_framerate = 30  # FPS
+
+dynamic_resolution = true
+min_resolution = [320, 180]

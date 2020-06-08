@@ -12,8 +12,15 @@ pub struct Connection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct Video {
+    pub device: String,
+    pub resolution: (u32, u32),
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
     pub connection: Connection,
+    pub video: Video,
 }
 
 impl Settings {

@@ -4,10 +4,24 @@ RC.Machine is a client/server application to control Raspberry PI based robot
 
 ## Install
 
+### Client
+
+- TODO
+
+### Server
+
 - [As systemd service](linux-systemd/README.md)
 - [Via docker](docker/README.md) (TODO)
 
 ## Build
+
+### Build Client
+
+```console
+make run
+```
+
+### Build Server
 
 - Set up ARMv7 cross compilation toolchain for the MacOS:
 
@@ -27,3 +41,8 @@ echo "SSH_USER=%raspberry.port%" >> .env
 # build and upload the server binary
 make sync
 ```
+
+WASM stuff: https://github.com/xi-editor/druid/tree/master/druid/examples/web
+
+see: https://github.com/rustwasm/wasm-pack/pull/736
+cargo install --git https://github.com/boringcactus/wasm-pack --branch=first-class-bins
