@@ -18,4 +18,4 @@ find_folder = "*"
 toml = "0.5"
 druid = { version = "0.6", features=["image",  "im", "svg"]}
 druid-shell = "0.6"
-
+druid-material-icons = { git = "https://github.com/derekdreery/druid-material-icons" }

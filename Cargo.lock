@@ -211,6 +211,7 @@ dependencies = [
  "common",
  "config",
  "druid",
+ "druid-material-icons",
  "druid-shell",
  "env_logger",
  "find_folder",
@@ -490,6 +491,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "druid-material-icons"
+version = "0.1.0"
+source = "git+https://github.com/derekdreery/druid-material-icons#b59b7fc47991ab5010a5f2007ff73421b699581a"
+dependencies = [
+ "druid",
 ]
 
 [[package]]

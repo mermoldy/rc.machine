@@ -12,8 +12,6 @@ extern crate env_logger;
 use common::settings;
 use druid::{AppLauncher, LocalizedString, WindowDesc};
 
-// icons: https://github.com/derekdreery/druid-material-icons
-
 pub fn main() {
     println!("Initializing a logger...");
     env_logger::init();
@@ -23,7 +21,7 @@ pub fn main() {
         Ok(r) => r,
         Err(e) => {
             error!("Failed to initialize a settings: {:?}", e);
-            std::process::exit(2);
+            std::process::exit(1);
         }
     };
 
@@ -32,14 +30,11 @@ pub fn main() {
         .window_size((700.0, 540.0))
         .with_min_size((700.0, 540.0));
 
-    let application = AppLauncher::with_window(main_window);
-    let delegate = views::Delegate {
-        eventsink: application.get_external_handle(),
-    };
+    let app = AppLauncher::with_window(main_window);
+    let delegate = views::Delegate::new(app.get_external_handle(), settings);
 
     info!("Initializing application window...");
-    application
-        .delegate(delegate)
+    app.delegate(delegate)
         .launch(views::AppState::default())
         .expect("Application launch failed.");
 }

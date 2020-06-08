@@ -3,9 +3,13 @@ extern crate image;
 use crate::gamepad;
 use crate::state::RemoteState;
 use crate::video;
+use druid_material_icons as icons;
+use std::sync::{Arc, Mutex};
 use video::{VideoFrame, VideoStream};
 
 use common::settings;
+
+use crate::utils;
 
 use druid::im::{vector, Vector};
 use druid::piet::{ImageFormat, InterpolationMode};
@@ -13,8 +17,8 @@ use druid::{
     lens,
     lens::LensExt,
     widget::{
-        prelude::*, Align, Button, Controller, CrossAxisAlignment, FillStrat, Flex, Label, List,
-        Scroll, Split, WidgetExt,
+        prelude::*, Align, Controller, CrossAxisAlignment, FillStrat, Flex, Label, List, Scroll,
+        Split, Svg, ViewSwitcher, WidgetExt,
     },
     AppDelegate, Color, Command, Data, DelegateCtx, Env, ExtEventSink, KeyCode, Lens, Rect,
     Selector, Target, UnitPoint, Widget,
@@ -26,13 +30,22 @@ use std::time;
 
 // Base colors
 pub const BASE_BG_COLOR: Color = Color::rgb8(0x1E, 0x1E, 0x1E);
+pub const BASE_LIGHT_BG_COLOR: Color = Color::rgb8(0x33, 0x33, 0x33);
 pub const BOTTOM_BAR_BG_COLOR: Color = Color::rgb8(0x00, 0x75, 0xC4);
 
 pub const LIGHT_1_COLOR: Color = Color::rgb8(0xBD, 0xC3, 0xC7);
 pub const LIGHT_2_COLOR: Color = Color::rgb8(0xE5, 0xE5, 0xE5);
 
+pub enum ConnectionEvent {
+    InitConnect,
+    InitDisconnect,
+    Error(String),
+    Connected,
+    Disconnected,
+}
+
 // Base events
-pub const RENDER_START_COMMAND: Selector = Selector::new("render.start");
+pub const CONNECTION_COMMAND: Selector<ConnectionEvent> = Selector::new("render.start");
 pub const RENDER_EVENT_COMMAND: Selector<image::RgbImage> = Selector::new("render.event");
 pub const RENDER_SET_FPS_COMMAND: Selector<u8> = Selector::new("render.set.fps");
 pub const GAMEPAD_EVENT_COMMAND: Selector<gamepad::Event> = Selector::new("gamepad.event");
@@ -46,6 +59,7 @@ pub struct AppState {
     pub video_height: u16,
     pub light_state: String,
     pub direction_state: String,
+    pub connection_status: String,
     pub fps: u8,
 }
 
@@ -58,13 +72,108 @@ impl AppState {
             video_height: 0,
             light_state: "".to_string(),
             direction_state: "".to_string(),
+            connection_status: "".to_string(),
             fps: 0,
         }
     }
 }
 
 pub struct Delegate {
-    pub eventsink: ExtEventSink,
+    pub sink: ExtEventSink,
+    pub tx: mpsc::Sender<video::Events>,
+    pub rx: Arc<Mutex<mpsc::Receiver<video::Events>>>,
+    pub video_stream: VideoStream,
+}
+
+impl Delegate {
+    pub fn new(sink: ExtEventSink, settings: settings::Settings) -> Self {
+        let (tx, rx): (mpsc::Sender<video::Events>, mpsc::Receiver<video::Events>) =
+            mpsc::channel();
+        Delegate {
+            sink: sink,
+            tx: tx,
+            rx: Arc::new(Mutex::new(rx)),
+            video_stream: VideoStream::new(settings),
+        }
+    }
+
+    pub fn connect_video(&mut self) {
+        let sink = self.sink.clone();
+        let tx = self.tx.clone();
+
+        match self.video_stream.connect(tx) {
+            Ok(_) => {
+                sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Connected, None)
+                    .expect("Failed to submit command");
+            }
+            Err(e) => sink
+                .submit_command(
+                    CONNECTION_COMMAND,
+                    ConnectionEvent::Error(format!("{}", e)),
+                    None,
+                )
+                .expect("Failed to submit command"),
+        };
+    }
+
+    pub fn disconnect_video(&self) {
+        self.video_stream.disconnect();
+        // drop(self.rx.try_lock());
+    }
+
+    pub fn process_video_events(&self) {
+        let sink = self.sink.clone();
+        let rx = self.rx.clone();
+        let mut fps_counter = video::FPSCounter::new(128);
+
+        thread::spawn(move || loop {
+            match rx.lock().unwrap().try_recv() {
+                Ok(event) => match event {
+                    video::Events::Message(img) => {
+                        sink.submit_command(RENDER_EVENT_COMMAND, img.frame, None)
+                            .expect("Failed to submit command");
+                        sink.submit_command(RENDER_SET_FPS_COMMAND, fps_counter.tick(), None)
+                            .expect("Failed to submit command");
+                    }
+                    video::Events::Disconnect => {
+                        sink.submit_command(
+                            CONNECTION_COMMAND,
+                            ConnectionEvent::Disconnected,
+                            None,
+                        )
+                        .expect("Failed to submit command");
+                    }
+                },
+                _ => {}
+            }
+            thread::sleep(time::Duration::from_millis(40));
+        });
+    }
+
+    pub fn process_gamepad_events(&self) {
+        let sink = self.sink.clone();
+
+        info!("Initializing a gamepad...");
+        let mut gamepad = match gamepad::Gamepad::new() {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to initialize a controller: {:?}", e);
+                return;
+            }
+        };
+
+        thread::spawn(move || loop {
+            let event = gamepad.process_events();
+            match event {
+                gamepad::Event::None => {}
+                _ => {
+                    sink.submit_command(GAMEPAD_EVENT_COMMAND, gamepad::Event::None, None)
+                        .expect("Render command failed to submit.");
+                }
+            }
+            thread::sleep(time::Duration::from_millis(40));
+        });
+    }
 }
 
 impl AppDelegate<AppState> for Delegate {
@@ -76,76 +185,33 @@ impl AppDelegate<AppState> for Delegate {
         data: &mut AppState,
         _env: &Env,
     ) -> bool {
-        if cmd.is(RENDER_START_COMMAND) {
-            if !data.is_connected {
-                info!("Initializing a settings...");
-                let settings = match settings::Settings::new() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        error!("Failed to initialize a settings: {:?}", e);
-                        std::process::exit(2);
+        if cmd.is(CONNECTION_COMMAND) {
+            match cmd.get_unchecked(CONNECTION_COMMAND) {
+                ConnectionEvent::InitConnect => {
+                    if !data.is_connected {
+                        self.connect_video();
                     }
-                };
-
-                info!("Initializing a gamepad...");
-                let mut gpad = match gamepad::Gamepad::new() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        error!("Failed to initialize a controller: {:?}", e);
-                        std::process::exit(5);
+                }
+                ConnectionEvent::InitDisconnect => {
+                    if data.is_connected {
+                        self.disconnect_video();
                     }
-                };
-
-                let video_stream = VideoStream::new(settings.clone());
-                let (tx, rx): (mpsc::Sender<VideoFrame>, mpsc::Receiver<VideoFrame>) =
-                    mpsc::channel();
-
-                thread::spawn(move || match video_stream.connect(tx) {
-                    Ok(_) => {
-                        info!("A video stream initialized");
-                        return false;
-                    }
-                    Err(e) => {
-                        error!("Failed to initialize a video stream: {:?}", e);
-                        return false;
-                    }
-                });
-
-                info!("Initializing a video stream...");
-                let sink = self.eventsink.clone();
-                let mut fps_counter = video::FPSCounter::new(128);
-
-                thread::spawn(move || loop {
-                    match rx.try_recv() {
-                        Ok(img) => {
-                            sink.submit_command(RENDER_EVENT_COMMAND, img.frame, None)
-                                .expect("Render command failed to submit.");
-                            sink.submit_command(RENDER_SET_FPS_COMMAND, fps_counter.tick(), None)
-                                .expect("Render command failed to submit.");
-                        }
-                        _ => {}
-                    }
-
-                    let gpad_event = gpad.process_events();
-                    match gpad_event {
-                        gamepad::Event::None => {}
-                        _ => {
-                            sink.submit_command(GAMEPAD_EVENT_COMMAND, gpad_event, None)
-                                .expect("Render command failed to submit.");
-                        }
-                    }
-
-                    thread::sleep(time::Duration::from_millis(40));
-                });
-
-                data.is_connected = true;
-                false
-            } else {
-                true
+                }
+                ConnectionEvent::Connected => {
+                    data.is_connected = true;
+                    self.process_video_events();
+                    self.process_gamepad_events();
+                }
+                ConnectionEvent::Disconnected => {
+                    data.is_connected = false;
+                }
+                ConnectionEvent::Error(e) => {
+                    data.is_connected = false;
+                    data.connection_status = format!("{}", e);
+                }
             }
-        } else {
-            true
         }
+        true
     }
 }
 
@@ -479,16 +545,16 @@ pub fn build_start_page() -> impl Widget<AppState> {
 
     right_col.add_flex_child(right_row.padding(base_padding), 0.5);
 
-    // let board = utils::load_svg("board.svg").unwrap();
-    // right_col.add_flex_child(
-    //     Align::new(
-    //         UnitPoint::BOTTOM_RIGHT,
-    //         Svg::new(board)
-    //             .border(LIGHT_2_COLOR, 0.0)
-    //             .fix_size(500.0, 350.0),
-    //     ),
-    //     1.0,
-    // );
+    let board = utils::load_svg("board.svg").unwrap();
+    right_col.add_flex_child(
+        Align::new(
+            UnitPoint::BOTTOM_RIGHT,
+            Svg::new(board)
+                .border(LIGHT_2_COLOR, 0.0)
+                .fix_size(500.0, 350.0),
+        ),
+        1.0,
+    );
     base_row.add_flex_child(
         right_col.cross_axis_alignment(CrossAxisAlignment::Start),
         0.5,
@@ -503,21 +569,50 @@ pub fn build_main_page() -> impl Widget<AppState> {
 
     // build left block
     let mut left_block = Flex::row();
-    let connect_button = Button::new("🎥")
-        .background(BOTTOM_BAR_BG_COLOR)
-        .on_click(|ctx, _data: &mut AppState, _env| {
-            let cmd = Command::new(RENDER_START_COMMAND, ());
-            ctx.submit_command(cmd, None);
 
-            ctx.request_focus();
-            ctx.set_active(true);
-        })
-        .padding(5.0);
-    left_block.add_child(Align::left(connect_button));
-    left_block.add_child(Label::new(|d: &AppState, _: &Env| format!("{} FPS", d.fps)));
+    let connect_button = ViewSwitcher::new(
+        |data: &AppState, _env| data.is_connected,
+        |selector, _data, _env| match selector {
+            true => Box::new(icons::CANCEL.new(Color::WHITE)),
+            false => Box::new(icons::LINK.new(Color::WHITE)),
+        },
+    )
+    .background(BOTTOM_BAR_BG_COLOR)
+    .on_click(|ctx, data: &mut AppState, _env| {
+        let conn_event = if data.is_connected {
+            ConnectionEvent::InitDisconnect
+        } else {
+            ConnectionEvent::InitConnect
+        };
+        ctx.submit_command(Command::new(CONNECTION_COMMAND, conn_event), None);
+        ctx.request_focus();
+        ctx.set_active(true);
+    })
+    .padding(5.0);
+    left_block.add_child(connect_button);
     left_block.add_child(Label::new(|d: &AppState, _: &Env| {
-        format!("{} x {}", d.video_width, d.video_height)
+        format!("{}", d.connection_status)
     }));
+    left_block.add_child(
+        Align::centered(Label::new(|d: &AppState, _: &Env| {
+            if d.is_connected {
+                format!("{} FPS", d.fps)
+            } else {
+                "".to_string()
+            }
+        }))
+        .fix_width(60.0),
+    );
+    left_block.add_child(
+        Align::centered(Label::new(|d: &AppState, _: &Env| {
+            if d.is_connected {
+                format!("{} x {}", d.video_width, d.video_height)
+            } else {
+                "".to_string()
+            }
+        }))
+        .fix_width(60.0),
+    );
 
     // build right block
     let mut right_block = Flex::row();
@@ -541,13 +636,20 @@ pub fn build_main_page() -> impl Widget<AppState> {
         .fix_height(30.0);
 
     // build frame window
-    col.add_flex_child(
-        MovingImage::new()
-            .fill_mode(FillStrat::Contain)
-            .background(BASE_BG_COLOR)
-            .center(),
-        1.0,
+    let video_view = ViewSwitcher::new(
+        |data: &AppState, _env| data.is_connected,
+        |selector, _data, _env| match selector {
+            true => Box::new(
+                MovingImage::new()
+                    .fill_mode(FillStrat::Contain)
+                    .background(BASE_BG_COLOR)
+                    .center(),
+            ),
+            false => Box::new(icons::CAMERA.new(BASE_LIGHT_BG_COLOR)),
+        },
     );
+
+    col.add_flex_child(video_view, 1.0);
     //col.add_flex_child(TextBox::new().lens(AppState::text), 1.0);
     col.add_flex_child(footer_cols, 0.0);
 
