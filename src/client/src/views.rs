@@ -2,7 +2,6 @@ extern crate image;
 
 use crate::gamepad;
 use crate::state::RemoteState;
-use crate::utils;
 use crate::video;
 use video::{VideoFrame, VideoStream};
 
@@ -14,8 +13,8 @@ use druid::{
     lens,
     lens::LensExt,
     widget::{
-        prelude::*, Align, Button, Container, Controller, CrossAxisAlignment, FillStrat, Flex,
-        Label, List, Padding, Scroll, Split, WidgetExt,
+        prelude::*, Align, Button, Controller, CrossAxisAlignment, FillStrat, Flex, Label, List,
+        Scroll, Split, WidgetExt,
     },
     AppDelegate, Color, Command, Data, DelegateCtx, Env, ExtEventSink, KeyCode, Lens, Rect,
     Selector, Target, UnitPoint, Widget,
@@ -114,7 +113,7 @@ impl AppDelegate<AppState> for Delegate {
 
                 info!("Initializing a video stream...");
                 let sink = self.eventsink.clone();
-                let mut fps_counter = utils::FPSCounter::new(128);
+                let mut fps_counter = video::FPSCounter::new(128);
 
                 thread::spawn(move || loop {
                     match rx.try_recv() {
