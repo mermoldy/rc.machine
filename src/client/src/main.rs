@@ -35,7 +35,7 @@ pub fn main() {
 
     let video_conn = video::VideoConnection::new(settings);
 
-    let main_window = WindowDesc::new(views::build_main_page)
+    let main_window = WindowDesc::new(views::build_ui)
         .title(LocalizedString::new("app-title").with_placeholder("RC.Machine"))
         .window_size((700.0, 540.0))
         .with_min_size((700.0, 540.0));
