@@ -1,4 +1,3 @@
-pub mod gamepad;
 pub mod state;
 pub mod utils;
 pub mod video;
@@ -25,13 +24,24 @@ pub fn main() {
         }
     };
 
+    info!("Initializing remote state connection...");
+    let state_conn = match state::StateConnection::new(settings.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to initialize remote state: {:?}", e);
+            std::process::exit(4);
+        }
+    };
+
+    let video_conn = video::VideoConnection::new(settings);
+
     let main_window = WindowDesc::new(views::build_main_page)
         .title(LocalizedString::new("app-title").with_placeholder("RC.Machine"))
         .window_size((700.0, 540.0))
         .with_min_size((700.0, 540.0));
 
     let app = AppLauncher::with_window(main_window);
-    let delegate = views::Delegate::new(app.get_external_handle(), settings);
+    let delegate = views::Delegate::new(app.get_external_handle(), video_conn, state_conn);
 
     info!("Initializing application window...");
     app.delegate(delegate)

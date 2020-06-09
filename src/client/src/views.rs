@@ -1,15 +1,9 @@
+extern crate gilrs;
 extern crate image;
 
-use crate::gamepad;
-use crate::state::RemoteState;
-use crate::video;
-use druid_material_icons as icons;
-use std::sync::{Arc, Mutex};
-use video::{VideoFrame, VideoStream};
-
-use common::settings;
-
+use crate::state;
 use crate::utils;
+use crate::video;
 
 use druid::im::{vector, Vector};
 use druid::piet::{ImageFormat, InterpolationMode};
@@ -23,8 +17,9 @@ use druid::{
     AppDelegate, Color, Command, Data, DelegateCtx, Env, ExtEventSink, KeyCode, Lens, Rect,
     Selector, Target, UnitPoint, Widget,
 };
+use druid_material_icons as icons;
 
-use std::sync::mpsc;
+use std::sync;
 use std::thread;
 use std::time;
 
@@ -45,10 +40,12 @@ pub enum ConnectionEvent {
 }
 
 // Base events
-pub const CONNECTION_COMMAND: Selector<ConnectionEvent> = Selector::new("render.start");
+pub const CONNECTION_COMMAND: Selector<ConnectionEvent> = Selector::new("connection.event");
+pub const KEYBOARD_COMMAND: Selector<druid::Event> = Selector::new("keyboard.event");
+pub const GAMEPAD_COMMAND: Selector<gilrs::EventType> = Selector::new("gamepad.event");
+
 pub const RENDER_EVENT_COMMAND: Selector<image::RgbImage> = Selector::new("render.event");
 pub const RENDER_SET_FPS_COMMAND: Selector<u8> = Selector::new("render.set.fps");
-pub const GAMEPAD_EVENT_COMMAND: Selector<gamepad::Event> = Selector::new("gamepad.event");
 pub const STATE_EVENT_COMMAND: Selector = Selector::new("state.event");
 
 #[derive(Clone, Default, Data, Lens)]
@@ -80,99 +77,167 @@ impl AppState {
 
 pub struct Delegate {
     pub sink: ExtEventSink,
-    pub tx: mpsc::Sender<video::Events>,
-    pub rx: Arc<Mutex<mpsc::Receiver<video::Events>>>,
-    pub video_stream: VideoStream,
+    video_conn: video::VideoConnection,
+    state_conn: state::StateConnection,
+    is_connected: sync::Arc<sync::atomic::AtomicBool>,
 }
 
 impl Delegate {
-    pub fn new(sink: ExtEventSink, settings: settings::Settings) -> Self {
-        let (tx, rx): (mpsc::Sender<video::Events>, mpsc::Receiver<video::Events>) =
-            mpsc::channel();
+    pub fn new(
+        sink: ExtEventSink,
+        video_conn: video::VideoConnection,
+        state_conn: state::StateConnection,
+    ) -> Self {
         Delegate {
             sink: sink,
-            tx: tx,
-            rx: Arc::new(Mutex::new(rx)),
-            video_stream: VideoStream::new(settings),
+            video_conn: video_conn,
+            state_conn: state_conn,
+            is_connected: sync::Arc::new(sync::atomic::AtomicBool::default()),
         }
     }
 
-    pub fn connect_video(&mut self) {
+    pub fn connect(&mut self) {
         let sink = self.sink.clone();
-        let tx = self.tx.clone();
 
-        match self.video_stream.connect(tx) {
+        self.state_conn.connect();
+        match self.video_conn.connect() {
             Ok(_) => {
                 sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Connected, None)
                     .expect("Failed to submit command");
             }
-            Err(e) => sink
-                .submit_command(
+            Err(e) => {
+                sink.submit_command(
                     CONNECTION_COMMAND,
                     ConnectionEvent::Error(format!("{}", e)),
                     None,
                 )
-                .expect("Failed to submit command"),
-        };
-    }
-
-    pub fn disconnect_video(&self) {
-        self.video_stream.disconnect();
-        // drop(self.rx.try_lock());
-    }
-
-    pub fn process_video_events(&self) {
-        let sink = self.sink.clone();
-        let rx = self.rx.clone();
-        let mut fps_counter = video::FPSCounter::new(128);
-
-        thread::spawn(move || loop {
-            match rx.lock().unwrap().try_recv() {
-                Ok(event) => match event {
-                    video::Events::Message(img) => {
-                        sink.submit_command(RENDER_EVENT_COMMAND, img.frame, None)
-                            .expect("Failed to submit command");
-                        sink.submit_command(RENDER_SET_FPS_COMMAND, fps_counter.tick(), None)
-                            .expect("Failed to submit command");
-                    }
-                    video::Events::Disconnect => {
-                        sink.submit_command(
-                            CONNECTION_COMMAND,
-                            ConnectionEvent::Disconnected,
-                            None,
-                        )
-                        .expect("Failed to submit command");
-                    }
-                },
-                _ => {}
-            }
-            thread::sleep(time::Duration::from_millis(40));
-        });
-    }
-
-    pub fn process_gamepad_events(&self) {
-        let sink = self.sink.clone();
-
-        info!("Initializing a gamepad...");
-        let mut gamepad = match gamepad::Gamepad::new() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to initialize a controller: {:?}", e);
+                .expect("Failed to submit command");
                 return;
             }
         };
 
-        thread::spawn(move || loop {
-            let event = gamepad.process_events();
-            match event {
-                gamepad::Event::None => {}
-                _ => {
-                    sink.submit_command(GAMEPAD_EVENT_COMMAND, gamepad::Event::None, None)
-                        .expect("Render command failed to submit.");
+        self.is_connected
+            .clone()
+            .store(true, sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn disconnect(&mut self) {
+        self.video_conn.disconnect();
+        self.state_conn.disconnect();
+
+        self.is_connected
+            .clone()
+            .store(false, sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn on_connected(&self) {
+        self.process_video_events();
+        self.process_gamepad_events();
+    }
+
+    fn process_video_events(&self) {
+        let sink = self.sink.clone();
+        let mut fps_counter = video::FPSCounter::new(128);
+        let connection = self.video_conn.connection().clone();
+
+        thread::spawn(move || {
+            info!("UI has been connected from the video stream");
+            loop {
+                match connection.clone().try_lock() {
+                    Ok(rx_mutex) => match *rx_mutex {
+                        Some(ref rx) => match rx.try_recv() {
+                            Ok(image) => {
+                                sink.submit_command(RENDER_EVENT_COMMAND, image.frame, None)
+                                    .expect("Failed to submit command");
+                                sink.submit_command(
+                                    RENDER_SET_FPS_COMMAND,
+                                    fps_counter.tick(),
+                                    None,
+                                )
+                                .expect("Failed to submit command");
+                            }
+                            _ => {
+                                thread::sleep(time::Duration::from_millis(40));
+                            }
+                        },
+                        None => {
+                            sink.submit_command(
+                                CONNECTION_COMMAND,
+                                ConnectionEvent::Disconnected,
+                                None,
+                            )
+                            .expect("Failed to submit command");
+                            break;
+                        }
+                    },
+                    _ => {}
                 }
             }
-            thread::sleep(time::Duration::from_millis(40));
+            info!("UI has been disconnected from the video stream");
         });
+    }
+
+    fn process_gamepad_events(&self) {
+        let sink = self.sink.clone();
+        let mut gamepad = match gilrs::Gilrs::new() {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to initialize a gamepad controller: {:?}", e);
+                return;
+            }
+        };
+        let is_connected = self.is_connected.clone();
+
+        thread::spawn(move || loop {
+            if !is_connected.load(sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            match gamepad.next_event() {
+                Some(gilrs::Event {
+                    id: _,
+                    event,
+                    time: _,
+                }) => sink
+                    .submit_command(GAMEPAD_COMMAND, event.clone(), None)
+                    .expect("Render command failed to submit."),
+                None => {}
+            }
+            thread::sleep(time::Duration::from_millis(2));
+        });
+    }
+
+    pub fn try_push_state(&mut self, data: &mut AppState) {
+        match self.state_conn.push() {
+            Some(ms) => {
+                info!("Pushed the state.");
+                let mut status = "";
+                if ms.forward {
+                    if ms.left {
+                        status = "↖";
+                    } else if ms.right {
+                        status = "↗";
+                    } else {
+                        status = "⬆";
+                    }
+                } else if ms.backward {
+                    if ms.left {
+                        status = "↙";
+                    } else if ms.right {
+                        status = "↘";
+                    } else {
+                        status = "⬇";
+                    }
+                } else if ms.left {
+                    status = "⬅";
+                } else if ms.right {
+                    status = "➡";
+                }
+
+                data.direction_state = status.to_string();
+                data.light_state = if ms.lamp_enabled { "💡" } else { "" }.to_string();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -185,22 +250,90 @@ impl AppDelegate<AppState> for Delegate {
         data: &mut AppState,
         _env: &Env,
     ) -> bool {
+        if cmd.is(KEYBOARD_COMMAND) | cmd.is(GAMEPAD_COMMAND) {
+            if cmd.is(KEYBOARD_COMMAND) {
+                match cmd.get_unchecked(KEYBOARD_COMMAND) {
+                    Event::KeyDown(key) => match key.key_code {
+                        KeyCode::KeyL => self.state_conn.enable_light(),
+                        KeyCode::ArrowUp => self.state_conn.forward(),
+                        KeyCode::ArrowDown => self.state_conn.backward(),
+                        KeyCode::ArrowRight => self.state_conn.right(),
+                        KeyCode::ArrowLeft => self.state_conn.left(),
+                        _ => {}
+                    },
+                    Event::KeyUp(key) => match key.key_code {
+                        KeyCode::KeyL => self.state_conn.disable_light(),
+                        KeyCode::ArrowUp => self.state_conn.stop(),
+                        KeyCode::ArrowDown => self.state_conn.stop(),
+                        KeyCode::ArrowRight => self.state_conn.straight(),
+                        KeyCode::ArrowLeft => self.state_conn.straight(),
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            if cmd.is(GAMEPAD_COMMAND) {
+                let gamepad_event = cmd.get_unchecked(GAMEPAD_COMMAND);
+                match gamepad_event {
+                    gilrs::EventType::ButtonPressed(button, _) => match button {
+                        gilrs::Button::East => {
+                            self.state_conn.enable_light();
+                        }
+                        _ => {}
+                    },
+                    gilrs::EventType::ButtonReleased(button, _) => match button {
+                        gilrs::Button::East => self.state_conn.disable_light(),
+                        _ => {}
+                    },
+                    gilrs::EventType::AxisChanged(axis, value, _) => match axis {
+                        gilrs::Axis::LeftStickX => {
+                            if value > &0.5 {
+                                self.state_conn.right();
+                            } else if value < &-0.5 {
+                                self.state_conn.left();
+                            } else {
+                                self.state_conn.straight();
+                            }
+                        }
+                        _ => {}
+                    },
+                    gilrs::EventType::ButtonChanged(button, value, _) => match button {
+                        gilrs::Button::RightTrigger2 => {
+                            if value > &0.5 {
+                                self.state_conn.forward();
+                            } else {
+                                self.state_conn.stop();
+                            }
+                        }
+                        gilrs::Button::LeftTrigger2 => {
+                            if value > &0.5 {
+                                self.state_conn.backward();
+                            } else {
+                                self.state_conn.stop();
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            self.try_push_state(data);
+        }
         if cmd.is(CONNECTION_COMMAND) {
             match cmd.get_unchecked(CONNECTION_COMMAND) {
                 ConnectionEvent::InitConnect => {
                     if !data.is_connected {
-                        self.connect_video();
+                        self.connect();
                     }
                 }
                 ConnectionEvent::InitDisconnect => {
                     if data.is_connected {
-                        self.disconnect_video();
+                        self.disconnect();
                     }
                 }
                 ConnectionEvent::Connected => {
                     data.is_connected = true;
-                    self.process_video_events();
-                    self.process_gamepad_events();
+                    self.on_connected();
                 }
                 ConnectionEvent::Disconnected => {
                     data.is_connected = false;
@@ -312,32 +445,11 @@ impl Widget<AppState> for MovingImage {
     }
 }
 
-struct FlexActionController {
-    state: RemoteState,
-}
+struct FlexActionController {}
 
 impl FlexActionController {
     pub fn new() -> Self {
-        info!("Initializing remote state connection...");
-
-        info!("Initializing a settings...");
-        let settings = match settings::Settings::new() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to initialize a settings: {:?}", e);
-                std::process::exit(2);
-            }
-        };
-
-        let state = match RemoteState::new(settings.clone()) {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to initialize remote state: {:?}", e);
-                std::process::exit(4);
-            }
-        };
-
-        FlexActionController { state: state }
+        FlexActionController {}
     }
 }
 
@@ -351,107 +463,15 @@ impl Controller<AppState, Flex<AppState>> for FlexActionController {
         env: &Env,
     ) {
         match event {
-            Event::KeyDown(key) => match key.key_code {
-                KeyCode::KeyL => self.state.enable_light(),
-                KeyCode::ArrowUp => self.state.forward(),
-                KeyCode::ArrowDown => self.state.backward(),
-                KeyCode::ArrowRight => self.state.right(),
-                KeyCode::ArrowLeft => self.state.left(),
-                _ => {}
-            },
-            Event::KeyUp(key) => match key.key_code {
-                KeyCode::KeyL => self.state.disable_light(),
-                KeyCode::ArrowUp => self.state.stop(),
-                KeyCode::ArrowDown => self.state.stop(),
-                KeyCode::ArrowRight => self.state.straight(),
-                KeyCode::ArrowLeft => self.state.straight(),
-                _ => {}
-            },
-            Event::Command(cmd) => {
-                if cmd.is(GAMEPAD_EVENT_COMMAND) {
-                    let gamepad_event = cmd.get_unchecked(GAMEPAD_EVENT_COMMAND);
-                    match gamepad_event {
-                        gamepad::Event::ButtonPressed(button) => match button {
-                            gamepad::Button::East => self.state.enable_light(),
-                            _ => {}
-                        },
-                        gamepad::Event::ButtonReleased(button) => match button {
-                            gamepad::Button::East => self.state.disable_light(),
-                            _ => {}
-                        },
-                        gamepad::Event::AxisChanged(axis, value) => match axis {
-                            gamepad::Axis::LeftStickX => {
-                                if value > &0.5 {
-                                    self.state.right();
-                                } else if value < &-0.5 {
-                                    self.state.left();
-                                } else {
-                                    self.state.straight();
-                                }
-                            }
-                            _ => {}
-                        },
-                        gamepad::Event::ButtonChanged(button, value) => match button {
-                            gamepad::Button::RightTrigger2 => {
-                                if value > &0.5 {
-                                    self.state.forward();
-                                } else {
-                                    self.state.stop();
-                                }
-                            }
-                            gamepad::Button::LeftTrigger2 => {
-                                if value > &0.5 {
-                                    self.state.backward();
-                                } else {
-                                    self.state.stop();
-                                }
-                            }
-                            _ => {}
-                        },
-                        _ => {}
-                    }
-                } else {
-                    child.event(ctx, event, data, env)
-                }
+            Event::KeyDown(_) => {
+                ctx.submit_command(Command::new(KEYBOARD_COMMAND, event.clone()), None);
             }
-            _ => child.event(ctx, event, data, env),
-        }
-
-        match self.state.push() {
-            Some(ms) => {
-                info!("Pushed the state.");
-
-                if ms.lamp_enabled {
-                    data.light_state = "💡".to_string();
-                } else {
-                    data.light_state = "".to_string();
-                }
-
-                let mut status = "";
-                if ms.forward {
-                    if ms.left {
-                        status = "↖";
-                    } else if ms.right {
-                        status = "↗";
-                    } else {
-                        status = "⬆";
-                    }
-                } else if ms.backward {
-                    if ms.left {
-                        status = "↙";
-                    } else if ms.right {
-                        status = "↘";
-                    } else {
-                        status = "⬇";
-                    }
-                } else if ms.left {
-                    status = "⬅";
-                } else if ms.right {
-                    status = "➡";
-                }
-                data.direction_state = status.to_string();
+            Event::KeyUp(_) => {
+                ctx.submit_command(Command::new(KEYBOARD_COMMAND, event.clone()), None);
             }
-            _ => {}
+            _ => {
+                child.event(ctx, event, data, env);
+            }
         }
     }
 }
@@ -540,11 +560,7 @@ pub fn build_start_page() -> impl Widget<AppState> {
     base_row.add_flex_child(Align::centered(left_col).padding(base_padding), 0.5);
 
     // Build right column
-    let right_row: Flex<AppState> = Flex::column();
     let mut right_col: Flex<AppState> = Flex::column();
-
-    right_col.add_flex_child(right_row.padding(base_padding), 0.5);
-
     let board = utils::load_svg("board.svg").unwrap();
     right_col.add_flex_child(
         Align::new(
@@ -650,10 +666,8 @@ pub fn build_main_page() -> impl Widget<AppState> {
     );
 
     col.add_flex_child(video_view, 1.0);
-    //col.add_flex_child(TextBox::new().lens(AppState::text), 1.0);
     col.add_flex_child(footer_cols, 0.0);
 
     col.controller(FlexActionController::new())
     //    .debug_paint_layout()
-    // col
 }

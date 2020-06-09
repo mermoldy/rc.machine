@@ -11,37 +11,35 @@ use std::io;
 use std::io::Read;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-pub struct VideoStream {
+pub struct VideoConnection {
     settings: settings::Settings,
-    is_connected: Arc<Mutex<bool>>,
-    thread: Option<thread::JoinHandle<()>>,
+    receiver: Arc<Mutex<Option<mpsc::Receiver<VideoFrame>>>>,
 }
 
 pub struct VideoFrame {
     pub frame: image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
 }
 
-pub enum Events {
-    Message(VideoFrame),
-    Disconnect,
-}
-
-impl VideoStream {
-    pub fn new(settings: settings::Settings) -> VideoStream {
-        VideoStream {
+impl VideoConnection {
+    pub fn new(settings: settings::Settings) -> VideoConnection {
+        VideoConnection {
             settings: settings,
-            is_connected: Arc::new(Mutex::new(false)),
-            thread: None,
+            receiver: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn connect(
-        &mut self,
-        sender: std::sync::mpsc::Sender<Events>,
-    ) -> Result<(), Box<dyn Error>> {
+    pub fn connect(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.is_connected() {
+            return Err(Box::new(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Already connected"),
+            )));
+        }
+
         let addr_str = format!(
             "{}:{}",
             &self.settings.connection.host, &self.settings.connection.video_port
@@ -50,25 +48,27 @@ impl VideoStream {
         for addr in addrs_iter {
             match TcpStream::connect_timeout(&addr, Duration::from_millis(5000)) {
                 Ok(mut stream) => {
-                    let tx = sender.clone();
-
-                    let c1 = self.is_connected.clone();
-                    let mut is_conn = c1.lock().unwrap();
-                    *is_conn = true;
+                    let receiver = self.receiver.clone();
+                    let (tx, rx): (mpsc::Sender<VideoFrame>, mpsc::Receiver<VideoFrame>) =
+                        mpsc::channel();
 
                     info!("Successfully connected to server port {:?}", addr);
                     let mut buffer: Vec<u8> = Vec::new();
                     let start_of_image: [u8; 2] = [255, 216];
                     let end_of_image: [u8; 2] = [255, 217];
                     let mut read_buffer = [0 as u8; 1024];
-                    let c2 = self.is_connected.clone();
 
-                    let th = thread::spawn(move || {
+                    thread::spawn(move || {
                         loop {
-                            let is_conn2 = c2.lock().unwrap();
-                            if !*is_conn2 {
-                                break;
+                            match receiver.try_lock() {
+                                Ok(receiver) => {
+                                    if !receiver.is_some() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => {}
                             }
+
                             match stream.read_exact(&mut read_buffer) {
                                 Ok(_) => {
                                     buffer.extend_from_slice(&read_buffer);
@@ -87,7 +87,7 @@ impl VideoStream {
                                                     let frame = VideoFrame {
                                                         frame: img.rotate90().to_rgb(),
                                                     };
-                                                    let _ = tx.send(Events::Message(frame));
+                                                    let _ = tx.send(frame);
                                                 }
                                                 Err(e) => {
                                                     error!("Failed to decode an image: {:?}", e)
@@ -106,10 +106,9 @@ impl VideoStream {
                                 }
                             }
                         }
-                        tx.send(Events::Disconnect);
                         info!("Disconnected");
                     });
-                    self.thread = Some(th);
+                    self.set_connection(Some(rx));
                     return Ok(());
                 }
                 Err(e) => {
@@ -123,11 +122,25 @@ impl VideoStream {
         )))
     }
 
-    pub fn disconnect(&self) {
-        let c1 = self.is_connected.clone();
-        let mut is_conn = c1.lock().unwrap();
-        *is_conn = false;
-        // Ok(())
+    pub fn is_connected(&mut self) -> bool {
+        match self.receiver.clone().try_lock() {
+            Ok(receiver) => receiver.is_some(),
+            Err(_) => false,
+        }
+    }
+
+    pub fn set_connection(&mut self, rx: Option<mpsc::Receiver<VideoFrame>>) {
+        let receiver = self.receiver.clone();
+        let mut value = receiver.lock().unwrap();
+        *value = rx;
+    }
+
+    pub fn connection(&self) -> Arc<Mutex<Option<mpsc::Receiver<VideoFrame>>>> {
+        self.receiver.clone()
+    }
+
+    pub fn disconnect(&mut self) {
+        self.set_connection(None);
     }
 }
 

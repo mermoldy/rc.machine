@@ -4,20 +4,20 @@ use common::settings;
 use common::types::MachineState;
 use std::error::Error;
 use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::net::ToSocketAddrs;
+use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
-pub struct RemoteState {
+pub struct StateConnection {
     settings: settings::Settings,
     state: MachineState,
     stream: Option<std::net::TcpStream>,
     dirty: bool,
 }
 
-impl RemoteState {
+impl StateConnection {
     pub fn new(settings: settings::Settings) -> Result<Self, Box<dyn Error>> {
-        Ok(RemoteState {
+        Ok(StateConnection {
             settings: settings,
             stream: None,
             state: MachineState {
@@ -31,7 +31,7 @@ impl RemoteState {
         })
     }
 
-    pub fn open(&mut self) {
+    pub fn connect(&mut self) {
         let addrs_iter = format!(
             "{}:{}",
             &self.settings.connection.host, &self.settings.connection.state_port
@@ -48,6 +48,7 @@ impl RemoteState {
                     stream.set_nodelay(true).expect("set_nodelay call failed");
                     stream.set_ttl(5).expect("set_ttl call failed");
                     self.stream = Some(stream);
+                    break;
                 }
                 Err(e) => {
                     error!("Failed to connect: {}. Address: {}", e, addr);
@@ -56,12 +57,29 @@ impl RemoteState {
         }
     }
 
+    pub fn is_connected(&mut self) -> bool {
+        self.stream.is_some()
+    }
+
+    pub fn disconnect(&mut self) {
+        match &self.stream {
+            Some(stream) => {
+                stream
+                    .shutdown(Shutdown::Both)
+                    .expect("Disconnect call failed");
+                self.stream = None;
+            }
+            None => {}
+        };
+    }
+
     pub fn forward(&mut self) {
         if !self.state.forward {
             self.state.forward = true;
             self.dirty = true;
         }
     }
+
     pub fn backward(&mut self) {
         if !self.state.backward {
             self.state.backward = true;
@@ -83,12 +101,14 @@ impl RemoteState {
             self.dirty = true;
         }
     }
+
     pub fn right(&mut self) {
         if !self.state.right {
             self.state.right = true;
             self.dirty = true;
         }
     }
+
     pub fn straight(&mut self) {
         if self.state.left || self.state.right {
             self.state.left = false;
@@ -122,6 +142,9 @@ impl RemoteState {
     }
 
     fn push_state(&mut self) {
+        if !self.is_connected() {
+            warn!("Cannot push data. Client is not connected.")
+        }
         let bytes = bincode::serialize(&self.state).unwrap();
         match self.stream.as_ref() {
             Some(mut stream) => match stream.write(&bytes) {
@@ -144,13 +167,13 @@ impl RemoteState {
                 }
                 Err(e) => {
                     error!("Failed to write: {:?}", e);
-                    self.open();
+                    self.connect();
                     self.push_state();
                 }
             },
             None => {
                 error!("Failed to write. Connection is not initialized. Reconnecting...");
-                self.open();
+                self.connect();
             }
         }
     }
