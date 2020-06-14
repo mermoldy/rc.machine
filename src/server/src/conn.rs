@@ -49,7 +49,7 @@ impl SessionPool {
                                 session_id: None, ..
                             } => match message.conn_type {
                                 msg::ConnectionType::Session(settings) => {
-                                    self.open_session(settings);
+                                    self.open_session(stream, settings, message.token);
                                 }
                                 _ => {}
                             },
@@ -57,7 +57,7 @@ impl SessionPool {
                                 session_id: Some(session_id),
                                 ..
                             } => match self.lookup_session(&session_id) {
-                                Some(mut session) => match message.conn_type {
+                                Some(session) => match message.conn_type {
                                     msg::ConnectionType::Video(settings) => {
                                         session.open_video_channel(settings);
                                     }
@@ -83,18 +83,45 @@ impl SessionPool {
 
         Ok(())
     }
+
     fn is_valid_token(&mut self, token: String) -> Result<(), Box<dyn error::Error>> {
         Ok(())
     }
+
     fn open_session(
         &mut self,
+        mut stream: TcpStream,
         config: common::settings::Heartbeat,
-    ) -> Result<(), Box<dyn error::Error>> {
-        Ok(())
+        token: String,
+    ) -> Result<(), io::Error> {
+        if !self.config.is_valid_token(token) {
+            return match stream.write_msg(&msg::OpenSession {
+                ok: false,
+                session_id: None,
+                error: Some("Invalid token".to_string()),
+            }) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            };
+        }
+
+        let session_id = utils::gen_id(8);
+        return match stream.write_msg(&msg::OpenSession {
+            ok: true,
+            session_id: Some(session_id.clone()),
+            error: None,
+        }) {
+            Ok(_) => {
+                let session = Session::new(session_id.clone(), stream);
+                self.sessions.insert(session_id, session);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        };
     }
 
-    fn lookup_session(&mut self, session_id: &String) -> Option<Session> {
-        None
+    fn lookup_session(&mut self, session_id: &String) -> Option<&mut Session> {
+        self.sessions.get_mut(session_id)
     }
 
     // fn handshake(&mut self, config: &utils::Config) -> Result<(), Box<dyn error::Error>> {
@@ -138,14 +165,16 @@ impl SessionPool {
 }
 
 pub struct Session {
+    pub id: String,
     conn: TcpStream,
     video_conn: Option<TcpStream>,
     state_conn: Option<TcpStream>,
 }
 
 impl Session {
-    pub fn new(conn: TcpStream) -> Self {
+    pub fn new(id: String, conn: TcpStream) -> Self {
         Session {
+            id: id,
             conn: conn,
             video_conn: None,
             state_conn: None,

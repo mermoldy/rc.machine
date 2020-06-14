@@ -20,18 +20,18 @@ pub struct RequestConnection {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OpenSession {
     pub ok: bool,
-    pub session_id: String,
-    pub error: String,
+    pub session_id: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OpenVideoConnection {
     pub ok: bool,
-    pub error: String,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OpenStateConnection {
     pub ok: bool,
-    pub error: String,
+    pub error: Option<String>,
 }

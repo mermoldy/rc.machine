@@ -90,3 +90,10 @@ impl Config {
             .collect()
     }
 }
+
+pub fn gen_id(size: u8) -> String {
+    rand::thread_rng()
+        .sample_iter(distributions::Alphanumeric)
+        .take(size as usize)
+        .collect()
+}
