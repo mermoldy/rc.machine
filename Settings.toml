@@ -1,7 +1,8 @@
 [connection]
 host = "raspberrypi.local"
-state_port = 20301
-video_port = 20302
+port = 20301
+# Generate: openssl rand -base64 64
+token = "YizfFg1UG4xYnijgz6vs8OTwJtJfyRqQJQBnSz9blqkg8Nd1THrz44HbCbA9wsJa"
 
 [heartbeat]
 # how often to send a heart beat in milliseconds
@@ -12,7 +13,7 @@ missed_beats = 6
 [video]
 # Height and width of frame.
 resolution = [600, 800]
-framerate = 60  # FPS
+max_framerate = 60  # FPS
 device = "/dev/video0"
 
 dynamic_framerate = true
