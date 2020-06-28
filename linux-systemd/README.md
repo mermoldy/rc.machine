@@ -27,3 +27,8 @@ sudo curl -O https://raw.githubusercontent.com/mermoldy/rc.machine/master/linux-
 sudo systemctl enable rc.server.service  # enables startup on boot
 sudo systemctl start rc.server.service
 ```
+
+```
+Environment=RC_TOKEN=<token>
+Environment=RC_PORT=20301
+```

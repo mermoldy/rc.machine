@@ -1,18 +1,21 @@
 extern crate bincode;
-use crate::utils;
 
+use simple_error::SimpleError as Error;
+use std::collections::HashMap;
 use std::error;
 use std::io;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
+use crate::camera;
 use crate::common::conn::MessageStream;
 use crate::common::messages as msg;
 use crate::common::settings;
 use crate::common::types;
-use simple_error::SimpleError as Error;
-use std::collections::HashMap;
-use std::time::Duration;
+use crate::utils;
 
 pub struct SessionPool {
     config: utils::Config,
@@ -21,6 +24,11 @@ pub struct SessionPool {
 
 impl SessionPool {
     pub fn new(config: utils::Config) -> Self {
+        let (tx, rx): (
+            std::sync::mpsc::Sender<types::MachineState>,
+            std::sync::mpsc::Receiver<types::MachineState>,
+        ) = mpsc::channel();
+
         SessionPool {
             config: config,
             sessions: HashMap::new(),
@@ -38,20 +46,23 @@ impl SessionPool {
                     stream.set_ttl(5)?;
                     stream.set_read_timeout(Some(Duration::from_millis(1000)))?;
 
-                    info!(
-                        "Connected new client {}, performing handshake...",
-                        stream.peer_addr()?
-                    );
-
+                    info!("Connecting new client {}...", stream.peer_addr()?);
                     match stream.read_msg::<msg::RequestConnection>(&mut vec![]) {
                         Ok(message) => match message {
                             msg::RequestConnection {
                                 session_id: None, ..
                             } => match message.conn_type {
                                 msg::ConnectionType::Session(settings) => {
-                                    self.open_session(stream, settings, message.token);
+                                    match self.open_session(stream, settings, message.token) {
+                                        Ok(session_id) => {
+                                            error!("Opened a session with ID: {}", session_id);
+                                        }
+                                        Err(e) => error!("Failed to open a session: {}", e),
+                                    };
                                 }
-                                _ => {}
+                                _ => {
+                                    error!("Unknown message type: {:?}", message.conn_type);
+                                }
                             },
                             msg::RequestConnection {
                                 session_id: Some(session_id),
@@ -59,19 +70,21 @@ impl SessionPool {
                             } => match self.lookup_session(&session_id) {
                                 Some(session) => match message.conn_type {
                                     msg::ConnectionType::Video(settings) => {
-                                        session.open_video_channel(settings);
+                                        session.open_video_channel(stream, settings)?;
                                     }
                                     msg::ConnectionType::Controller(settings) => {
-                                        session.open_controller_channel(settings);
+                                        session.open_controller_channel(stream, settings)?;
                                     }
                                     _ => {
-                                        warn!("Unknown connection type");
+                                        error!("Unknown message type: {:?}", message.conn_type);
                                     }
                                 },
                                 None => warn!("Session with ID {} not found", session_id),
                             },
                         },
-                        Err(_) => {}
+                        Err(e) => {
+                            error!("{}", e);
+                        }
                     }
                 }
                 Err(e) => {
@@ -93,19 +106,19 @@ impl SessionPool {
         mut stream: TcpStream,
         config: common::settings::Heartbeat,
         token: String,
-    ) -> Result<(), io::Error> {
+    ) -> Result<String, Error> {
         if !self.config.is_valid_token(token) {
             return match stream.write_msg(&msg::OpenSession {
                 ok: false,
                 session_id: None,
                 error: Some("Invalid token".to_string()),
             }) {
-                Ok(_) => Ok(()),
-                Err(e) => Err(e),
+                Ok(_) => Err(Error::new("Session is rejected due to invalid token.")),
+                Err(e) => Err(Error::new(format!("{}", e))),
             };
         }
 
-        let session_id = utils::gen_id(8);
+        let session_id = utils::gen_id(24);
         return match stream.write_msg(&msg::OpenSession {
             ok: true,
             session_id: Some(session_id.clone()),
@@ -113,10 +126,10 @@ impl SessionPool {
         }) {
             Ok(_) => {
                 let session = Session::new(session_id.clone(), stream);
-                self.sessions.insert(session_id, session);
-                Ok(())
+                self.sessions.insert(session_id.clone(), session);
+                Ok(session_id)
             }
-            Err(e) => Err(e),
+            Err(e) => Err(Error::new(format!("{}", e))),
         };
     }
 
@@ -124,44 +137,9 @@ impl SessionPool {
         self.sessions.get_mut(session_id)
     }
 
-    // fn handshake(&mut self, config: &utils::Config) -> Result<(), Box<dyn error::Error>> {
-    //     debug!("Waiting for hello message...");
-    //     match self.stream.read_msg(&mut vec![]) {
-    //         Ok(message) => match message {
-    //             msg::ClientHello { .. } => {
-    //                 debug!("Received hello message");
-    //                 let is_ok = config.is_valid_token(message.token);
-    //                 if is_ok {}
-    //                 let hello = msg::ServerHello {
-    //                     ok: is_ok,
-    //                     video_port: 0,
-    //                     state_port: 0,
-    //                 };
-    //                 match self.stream.write_msg(&hello) {
-    //                     Ok(_) => {
-    //                         debug!("Sended hello message (ok: {})", hello.ok);
-    //                         if hello.ok {
-    //                             Ok(())
-    //                         } else {
-    //                             Err(Box::new(io::Error::new(
-    //                                 io::ErrorKind::Other,
-    //                                 format!("Client is rejected due to invalid token"),
-    //                             )))
-    //                         }
-    //                     }
-    //                     Err(e) => Err(Box::new(io::Error::new(
-    //                         e.kind(),
-    //                         format!("Failed to send hello message: {}", e),
-    //                     ))),
-    //                 }
-    //             }
-    //         },
-    //         Err(e) => Err(Box::new(io::Error::new(
-    //             e.kind(),
-    //             format!("Failed to read hello message: {}", e),
-    //         ))),
-    //     }
-    // }
+    pub fn recv_state(&self, timeout: std::time::Duration) -> Option<&types::MachineState> {
+        None
+    }
 }
 
 pub struct Session {
@@ -183,15 +161,82 @@ impl Session {
 
     fn open_video_channel(
         &mut self,
+        mut stream: TcpStream,
         config: common::settings::Video,
     ) -> Result<(), Box<dyn error::Error>> {
+        thread::spawn(move || {
+            extern crate rscam;
+
+            match rscam::new(config.device.as_str()) {
+                Ok(mut camera) => {
+                    match camera.start(&rscam::Config {
+                        interval: (1, config.max_framerate as u32),
+                        resolution: config.resolution,
+                        format: b"MJPG",
+                        nbuffers: 32,
+                        field: rscam::FIELD_NONE,
+                    }) {
+                        Ok(_) => {
+                            let _ = stream.write_msg(&msg::OpenVideoConnection {
+                                ok: true,
+                                error: None,
+                            });
+                            loop {
+                                match camera.capture() {
+                                    Ok(mut frame) => match stream.write_msg(&msg::VideoFrame {
+                                        data: frame.to_vec(),
+                                    }) {
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to send VideoFrame: {:?}. Stopping video stream...",
+                                                e
+                                            );
+                                            break;
+                                        }
+                                        _ => {}
+                                    },
+                                    Err(e) => {
+                                        error!("Unable to take picture: {:?}", e);
+                                    }
+                                }
+                                std::thread::sleep_ms(5);
+                            }
+                        }
+                        Err(e) => {
+                            let _ = stream.write_msg(&msg::OpenVideoConnection {
+                                ok: false,
+                                error: Some(format!("Failed to start the stream: {}", e)),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = stream.write_msg(&msg::OpenVideoConnection {
+                        ok: false,
+                        error: Some(format!("Failed to initialize video device: {}", e)),
+                    });
+                }
+            }
+        });
+
         Ok(())
     }
 
     fn open_controller_channel(
         &mut self,
+        mut stream: TcpStream,
         config: common::settings::Controller,
     ) -> Result<(), Box<dyn error::Error>> {
+        let open_ctrl_msg = stream.write_msg(&msg::OpenControllerConnection {
+            ok: true,
+            error: None,
+        });
+
+        thread::spawn(move || loop {
+            let s = stream.read_msg::<types::MachineState>(&mut vec![]);
+            debug!("State: {:?}", s);
+        });
+
         Ok(())
     }
 }

@@ -63,7 +63,8 @@ impl Config {
 
         let token = match env::var("RC_TOKEN") {
             Ok(res) => res,
-            Err(_) => {
+            Err(e) => {
+                error!("{:?}", e);
                 let tmp = Config::tmp_token(64);
                 warn!(
                     "RC_TOKEN environment variable missing. Using temporary token:\n{}",

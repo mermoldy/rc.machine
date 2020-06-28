@@ -20,3 +20,4 @@ druid = { version = "0.6", features=["image",  "im", "svg"]}
 druid-shell = "0.6"
 druid-material-icons = { git = "https://github.com/derekdreery/druid-material-icons" }
 simple-error = "0.2.1"
+stoppable_thread = "0.2.1"

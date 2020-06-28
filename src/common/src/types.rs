@@ -1,20 +1,9 @@
+extern crate image;
 extern crate serde;
 
 use self::serde::{Deserialize, Serialize};
 use settings::{Heartbeat, Video};
 use std::fmt;
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ClientHello {
-    pub token: String,
-    pub video: Video,
-    pub heartbeat: Heartbeat,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ServerHello {
-    pub ok: bool,
-}
 
 #[derive(Serialize, Deserialize, Copy, Clone)]
 pub struct MachineState {
@@ -55,4 +44,8 @@ impl MachineState {
             lamp_enabled: false,
         }
     }
+}
+
+pub struct VideoFrame {
+    pub image: image::RgbImage,
 }

@@ -3,7 +3,7 @@ extern crate serde;
 use self::serde::{Deserialize, Serialize};
 use settings::{Controller, Heartbeat, Video};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ConnectionType {
     Session(Heartbeat),
     Video(Video),
@@ -31,7 +31,12 @@ pub struct OpenVideoConnection {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct OpenStateConnection {
+pub struct OpenControllerConnection {
     pub ok: bool,
     pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct VideoFrame {
+    pub data: Vec<u8>,
 }

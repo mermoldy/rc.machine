@@ -15,6 +15,7 @@ pub struct Connection {
 pub struct Video {
     pub device: String,
     pub resolution: (u32, u32),
+    pub max_framerate: u8,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

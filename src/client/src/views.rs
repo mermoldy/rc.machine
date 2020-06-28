@@ -5,8 +5,10 @@ use std::sync;
 use std::thread;
 use std::time;
 
-use crate::state;
-use crate::video;
+use crate::common::settings;
+use crate::common::types;
+use crate::conn;
+use crate::utils;
 
 use druid::piet::{ImageFormat, InterpolationMode};
 use druid::{
@@ -17,6 +19,8 @@ use druid::{
     Selector, Target, Widget,
 };
 use druid_material_icons as icons;
+use stoppable_thread as st_thread;
+use sync::mpsc;
 
 pub const BASE_BG_COLOR: Color = Color::rgb8(0x1E, 0x1E, 0x1E);
 pub const BASE_LIGHT_BG_COLOR: Color = Color::rgb8(0x33, 0x33, 0x33);
@@ -25,7 +29,7 @@ pub const BOTTOM_BAR_BG_COLOR: Color = Color::rgb8(0x00, 0x75, 0xC4);
 pub const CONNECTION_COMMAND: Selector<ConnectionEvent> = Selector::new("connection.event");
 pub const KEYBOARD_COMMAND: Selector<druid::Event> = Selector::new("keyboard.event");
 pub const GAMEPAD_COMMAND: Selector<gilrs::EventType> = Selector::new("gamepad.event");
-pub const VIDEO_SET_FRAME_COMMAND: Selector<image::RgbImage> = Selector::new("render.event");
+pub const VIDEO_SET_FRAME_COMMAND: Selector<types::VideoFrame> = Selector::new("render.event");
 pub const VIDEO_SET_FPS_COMMAND: Selector<u8> = Selector::new("render.set.fps");
 
 pub enum ConnectionEvent {
@@ -63,53 +67,115 @@ impl AppState {
 
 pub struct Delegate {
     pub sink: ExtEventSink,
-    video_conn: video::VideoConnection,
-    state_conn: state::StateConnection,
     is_connected: sync::Arc<sync::atomic::AtomicBool>,
+    settings: settings::Settings,
 }
 
 impl Delegate {
-    pub fn new(
-        sink: ExtEventSink,
-        video_conn: video::VideoConnection,
-        state_conn: state::StateConnection,
-    ) -> Self {
+    pub fn new(sink: ExtEventSink, settings: settings::Settings) -> Self {
         Delegate {
             sink: sink,
-            video_conn: video_conn,
-            state_conn: state_conn,
+            settings: settings,
             is_connected: sync::Arc::new(sync::atomic::AtomicBool::default()),
         }
     }
 
     pub fn connect(&mut self) {
+        let is_connected = self.is_connected;
+
+        if is_connected.into_inner() {
+            warn!("Alredy connected.");
+            return;
+        } else {
+            is_connected
+                .clone()
+                .store(true, sync::atomic::Ordering::Relaxed);
+        }
+
         let sink = self.sink.clone();
+        let settings = self.settings.clone();
 
-        self.state_conn.connect();
-        match self.video_conn.connect() {
-            Ok(_) => {
-                sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Connected, None)
-                    .expect("Failed to submit command");
-            }
-            Err(e) => {
-                sink.submit_command(
-                    CONNECTION_COMMAND,
-                    ConnectionEvent::Error(format!("{}", e)),
-                    None,
-                )
-                .expect("Failed to submit command");
-                return;
-            }
-        };
+        let (key_tx, key_rx): (
+            mpsc::Sender<conn::KeyEvents>,
+            mpsc::Receiver<conn::KeyEvents>,
+        ) = mpsc::channel();
 
-        self.is_connected
+        thread::spawn(move || {
+            let mut session = conn::Session::new(settings);
+            match session.connect() {
+                Ok(_) => {
+                    let key_th = st_thread::spawn(move |stopped| {
+                        while !stopped.get() {
+                            match key_rx.try_recv() {
+                                Ok(value) => {
+                                    session.send(value);
+                                }
+                                Err(_) => {}
+                            };
+                        }
+                    });
+
+                    let video_th = st_thread::spawn(move |stopped| {
+                        while !stopped.get() {
+                            session.receive();
+                        }
+                    });
+
+                    session.disconnect();
+                }
+                Err(e) => {}
+            }
+        });
+
+        is_connected
             .clone()
-            .store(true, sync::atomic::Ordering::Relaxed);
+            .store(false, sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn connect_(&mut self) {
+        let sink = self.sink.clone();
+        //let settings = self.settings.clone();
+
+        thread::spawn(move || {
+            thread::spawn(move || {});
+        });
+
+        thread::spawn(move || {
+            // let mut session = conn::Session::new(settings);
+            match session.connect() {
+                Ok(_) => {
+                    sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Connected, None)
+                        .expect("Failed to submit command");
+                }
+                Err(e) => {
+                    sink.submit_command(
+                        CONNECTION_COMMAND,
+                        ConnectionEvent::Error(format!("{}", e)),
+                        None,
+                    )
+                    .expect("Failed to submit command");
+                    return;
+                }
+            };
+
+            // self.is_connected
+            //     .clone()
+            //     .store(true, sync::atomic::Ordering::Relaxed);
+        });
     }
 
     pub fn disconnect(&mut self) {
-        self.video_conn.disconnect();
-        self.state_conn.disconnect();
+        let sink = self.sink.clone();
+
+        match self.session.disconnect() {
+            Ok(_) => {
+                sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Disconnected, None)
+                    .expect("Failed to submit command");
+            }
+            Err(e) => {
+                error!("{}", e);
+            }
+        }
 
         self.is_connected
             .clone()
@@ -123,8 +189,8 @@ impl Delegate {
 
     fn process_video_events(&self) {
         let sink = self.sink.clone();
-        let mut fps_counter = video::FPSCounter::new(128);
-        let connection = self.video_conn.connection().clone();
+        let mut fps_counter = utils::FPSCounter::new(128);
+        let connection = self.session.video_rx.clone();
 
         thread::spawn(move || {
             info!("UI has been connected from the video stream");
@@ -133,7 +199,7 @@ impl Delegate {
                     Ok(rx_mutex) => match *rx_mutex {
                         Some(ref rx) => match rx.try_recv() {
                             Ok(image) => {
-                                sink.submit_command(VIDEO_SET_FRAME_COMMAND, image.frame, None)
+                                sink.submit_command(VIDEO_SET_FRAME_COMMAND, image, None)
                                     .expect("Failed to submit command");
                                 sink.submit_command(
                                     VIDEO_SET_FPS_COMMAND,
@@ -193,7 +259,7 @@ impl Delegate {
     }
 
     pub fn try_push_state(&mut self, data: &mut AppState) {
-        match self.state_conn.push() {
+        match self.session.try_push() {
             Some(ms) => {
                 info!("Pushed the state.");
                 let mut status = "";
@@ -240,19 +306,19 @@ impl AppDelegate<AppState> for Delegate {
             if cmd.is(KEYBOARD_COMMAND) {
                 match cmd.get_unchecked(KEYBOARD_COMMAND) {
                     Event::KeyDown(key) => match key.key_code {
-                        KeyCode::KeyL => self.state_conn.enable_light(),
-                        KeyCode::ArrowUp => self.state_conn.forward(),
-                        KeyCode::ArrowDown => self.state_conn.backward(),
-                        KeyCode::ArrowRight => self.state_conn.right(),
-                        KeyCode::ArrowLeft => self.state_conn.left(),
+                        KeyCode::KeyL => self.session.state.enable_light(),
+                        KeyCode::ArrowUp => self.session.state.forward(),
+                        KeyCode::ArrowDown => self.session.state.backward(),
+                        KeyCode::ArrowRight => self.session.state.right(),
+                        KeyCode::ArrowLeft => self.session.state.left(),
                         _ => {}
                     },
                     Event::KeyUp(key) => match key.key_code {
-                        KeyCode::KeyL => self.state_conn.disable_light(),
-                        KeyCode::ArrowUp => self.state_conn.stop(),
-                        KeyCode::ArrowDown => self.state_conn.stop(),
-                        KeyCode::ArrowRight => self.state_conn.straight(),
-                        KeyCode::ArrowLeft => self.state_conn.straight(),
+                        KeyCode::KeyL => self.session.state.disable_light(),
+                        KeyCode::ArrowUp => self.session.state.stop(),
+                        KeyCode::ArrowDown => self.session.state.stop(),
+                        KeyCode::ArrowRight => self.session.state.straight(),
+                        KeyCode::ArrowLeft => self.session.state.straight(),
                         _ => {}
                     },
                     _ => {}
@@ -263,22 +329,22 @@ impl AppDelegate<AppState> for Delegate {
                 match gamepad_event {
                     gilrs::EventType::ButtonPressed(button, _) => match button {
                         gilrs::Button::East => {
-                            self.state_conn.enable_light();
+                            self.session.state.enable_light();
                         }
                         _ => {}
                     },
                     gilrs::EventType::ButtonReleased(button, _) => match button {
-                        gilrs::Button::East => self.state_conn.disable_light(),
+                        gilrs::Button::East => self.session.state.disable_light(),
                         _ => {}
                     },
                     gilrs::EventType::AxisChanged(axis, value, _) => match axis {
                         gilrs::Axis::LeftStickX => {
                             if value > &0.5 {
-                                self.state_conn.right();
+                                self.session.state.right();
                             } else if value < &-0.5 {
-                                self.state_conn.left();
+                                self.session.state.left();
                             } else {
-                                self.state_conn.straight();
+                                self.session.state.straight();
                             }
                         }
                         _ => {}
@@ -286,16 +352,16 @@ impl AppDelegate<AppState> for Delegate {
                     gilrs::EventType::ButtonChanged(button, value, _) => match button {
                         gilrs::Button::RightTrigger2 => {
                             if value > &0.5 {
-                                self.state_conn.forward();
+                                self.session.state.forward();
                             } else {
-                                self.state_conn.stop();
+                                self.session.state.stop();
                             }
                         }
                         gilrs::Button::LeftTrigger2 => {
                             if value > &0.5 {
-                                self.state_conn.backward();
+                                self.session.state.backward();
                             } else {
-                                self.state_conn.stop();
+                                self.session.state.stop();
                             }
                         }
                         _ => {}
@@ -308,6 +374,7 @@ impl AppDelegate<AppState> for Delegate {
         if cmd.is(CONNECTION_COMMAND) {
             match cmd.get_unchecked(CONNECTION_COMMAND) {
                 ConnectionEvent::InitConnect => {
+                    data.connection_status = format!("Connecting...");
                     if !data.is_connected {
                         self.connect();
                     }
@@ -361,8 +428,8 @@ impl Widget<AppState> for MovingImage {
             Event::Command(cmd) => {
                 if cmd.is(VIDEO_SET_FRAME_COMMAND) {
                     let rgb_image = cmd.get_unchecked(VIDEO_SET_FRAME_COMMAND);
-                    let sizeofimage = &rgb_image.dimensions();
-                    self.image_data = rgb_image.to_vec();
+                    let sizeofimage = &rgb_image.image.dimensions();
+                    self.image_data = rgb_image.image.to_vec();
                     self.size = Size::new(sizeofimage.0 as f64, sizeofimage.1 as f64);
                     ctx.request_paint();
 
@@ -417,15 +484,19 @@ impl Widget<AppState> for MovingImage {
 
         let offset_matrix = self.fill.affine_to_fill(ctx.size(), self.size);
         ctx.transform(offset_matrix);
-        let im = ctx
-            .make_image(
-                self.size.width as usize,
-                self.size.height as usize,
-                &self.image_data,
-                ImageFormat::Rgb,
-            )
-            .unwrap();
-        ctx.draw_image(&im, self.size.to_rect(), InterpolationMode::NearestNeighbor);
+        match ctx.make_image(
+            self.size.width as usize,
+            self.size.height as usize,
+            &self.image_data,
+            ImageFormat::Rgb,
+        ) {
+            Ok(im) => {
+                ctx.draw_image(&im, self.size.to_rect(), InterpolationMode::NearestNeighbor);
+            }
+            Err(e) => {
+                error!("Failed to render a frame: {}", e);
+            }
+        }
     }
 }
 

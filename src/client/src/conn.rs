@@ -26,398 +26,358 @@ use common::types::MachineState;
 use simple_error::SimpleError as Error;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
+use stoppable_thread as st_thread;
+
+pub enum KeyEvents {
+    Forward,
+    Backward,
+    Left,
+    Right,
+    LightOn,
+    LightOff,
+}
 
 pub struct Session {
-    // video_conn: VideoConnection,
-    // state_conn: StateConnection,
+    main_conn: Option<TcpStream>,
+    conn_timeout: u64,
+    read_timeout: u64,
     settings: Settings,
+    pub state: State,
+
+    pub video_rx: Arc<Mutex<Option<mpsc::Receiver<types::VideoFrame>>>>,
+    pub state_conn: Arc<Mutex<Option<TcpStream>>>,
+
     is_connected: sync::Arc<sync::atomic::AtomicBool>,
+    threads: Vec<st_thread::StoppableHandle<()>>,
 }
 
 impl Session {
     pub fn new(settings: Settings) -> Self {
         Session {
-            // video_conn: video_conn,
-            // state_conn: state_conn,
+            main_conn: None,
+            state_conn: Arc::new(Mutex::new(None)),
+            video_rx: Arc::new(Mutex::new(None)),
+            conn_timeout: 300,
+            read_timeout: 300,
             settings: settings,
+            state: State::new(),
             is_connected: sync::Arc::new(sync::atomic::AtomicBool::default()),
+            threads: vec![],
         }
     }
 
-    pub fn connect(&mut self) -> Result<(), Box<dyn error::Error>> {
-        let addrs_iter = format!(
+    pub fn connect(&mut self) -> Result<(), io::Error> {
+        let addrs_str = format!(
             "{}:{}",
             &self.settings.connection.host, &self.settings.connection.port
-        )
-        .to_socket_addrs()
-        .unwrap();
+        );
+        let addrs_iter = addrs_str.to_socket_addrs()?;
 
         for addr in addrs_iter {
             info!("Connecting to {:?}...", addr);
 
-            match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
-                Ok(mut stream) => {
-                    stream.set_nodelay(true).expect("set_nodelay call failed");
-                    stream.set_ttl(5).expect("set_ttl call failed");
-                    stream.set_read_timeout(Some(Duration::from_millis(1000)))?;
+            match self.open_session(&addr) {
+                Ok((stream, session_id)) => {
+                    info!("Opened session with ID {} on {}", session_id, addr);
+                    self.main_conn = Some(stream);
 
-                    // stream.write(buf: &[u8])
+                    info!("Connecting to the video stream...");
+                    match self.open_video_connection(&addr, session_id) {
+                        Ok(stream) => {
+                            // self.video_conn = Some(stream);
+                            self.stream_video(stream);
 
-                    info!("Successfully connected to server, performing handshake...");
-                    self.open_session(&mut stream);
+                            self.is_connected
+                                .clone()
+                                .store(false, sync::atomic::Ordering::Relaxed);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            error!("Unable to open video connection: {}", e);
+                            return Err(e);
+                        }
+                    };
+
                     break;
                 }
                 Err(e) => {
-                    warn!("Failed to connect: {}. Address: {}", e, addr);
+                    info!("{:?}", e);
+                    if e.kind() == io::ErrorKind::TimedOut
+                        || e.kind() == io::ErrorKind::ConnectionRefused
+                    {
+                        warn!("Failed to connect to {}: {}", addr, e);
+                    } else {
+                        return Err(e);
+                    }
                 }
             }
         }
+
         self.is_connected
             .clone()
-            .store(true, sync::atomic::Ordering::Relaxed);
+            .store(false, sync::atomic::Ordering::Relaxed);
 
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to connect to {}", addrs_str),
+        ))
     }
 
-    fn open_session(&mut self, stream: &mut TcpStream) -> Result<msg::OpenSession, Error> {
-        let hello = msg::RequestConnection {
+    fn open_session(&self, addr: &std::net::SocketAddr) -> Result<(TcpStream, String), io::Error> {
+        let mut stream =
+            TcpStream::connect_timeout(&addr, Duration::from_millis(self.conn_timeout))?;
+
+        stream.set_nodelay(true)?;
+        stream.set_ttl(5)?;
+        stream.set_read_timeout(Some(Duration::from_millis(self.read_timeout)))?;
+
+        debug!("Sending open session message...");
+        let open_session_msg = &msg::RequestConnection {
             token: self.settings.connection.token.clone(),
             session_id: None,
             conn_type: msg::ConnectionType::Session(self.settings.heartbeat.clone()),
         };
+        stream.write_msg(open_session_msg)?;
 
-        debug!("Sending hello message...");
-        match stream.write_msg(&hello) {
-            Ok(_) => {
-                debug!("Sended hello message. Waiting for a response...");
-                match stream.read_msg::<msg::OpenSession>(&mut vec![]) {
-                    Ok(server_hello) => {
-                        debug!("Received hello message.");
-                        if server_hello.ok {
-                            info!("Session is established.");
-                            Ok(server_hello)
-                        } else {
-                            Err(Error::new("Session is rejected by the server"))
-                        }
-                    }
-                    Err(e) => Err(Error::new(format!("{}", e))),
-                }
+        debug!("Sended open session message. Waiting for a response...");
+        let open_session_resp = stream.read_msg::<msg::OpenSession>(&mut vec![])?;
+
+        debug!("Received open session response.");
+        if open_session_resp.ok {
+            match open_session_resp.session_id {
+                Some(session_id) => Ok((stream, session_id)),
+                None => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Response missing session ID",
+                )),
             }
-            Err(e) => Err(Error::new(format!("{}", e))),
+        } else {
+            let err_msg = open_session_resp.error.unwrap_or("Unknown".to_string());
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error when opening session: {}", err_msg),
+            ))
         }
     }
 
-    // pub fn disconnect(&mut self) {
-    //     self.video_conn.disconnect();
-    //     self.state_conn.disconnect();
+    fn open_video_connection(
+        &self,
+        addr: &std::net::SocketAddr,
+        session_id: String,
+    ) -> Result<TcpStream, io::Error> {
+        let mut stream =
+            TcpStream::connect_timeout(&addr, Duration::from_millis(self.conn_timeout))?;
 
-    //     self.is_connected
-    //         .clone()
-    //         .store(false, sync::atomic::Ordering::Relaxed);
-    // }
+        stream.set_nodelay(true)?;
+        stream.set_ttl(5)?;
+        stream.set_read_timeout(Some(Duration::from_millis(self.read_timeout)))?;
 
-    // pub fn on_connected(&self) {
-    //     self.process_video_events();
-    //     self.process_gamepad_events();
-    // }
+        debug!("Sending open video message...");
+        let open_session_msg = &msg::RequestConnection {
+            token: self.settings.connection.token.clone(),
+            session_id: Some(session_id),
+            conn_type: msg::ConnectionType::Video(self.settings.video.clone()),
+        };
+        stream.write_msg(open_session_msg)?;
+
+        debug!("Sended open video message. Waiting for a response...");
+        let open_video_resp = stream.read_msg::<msg::OpenVideoConnection>(&mut vec![])?;
+        if !open_video_resp.ok {
+            let err_msg = open_video_resp.error.unwrap_or("Unknown".to_string());
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to open video stream. {}", err_msg),
+            ))
+        } else {
+            debug!("Video connection is opened.");
+            Ok(stream)
+        }
+    }
+
+    pub fn set_connection(&mut self, rx: Option<mpsc::Receiver<types::VideoFrame>>) {
+        let receiver = self.video_rx.clone();
+
+        let mut value = receiver.try_lock().unwrap();
+        *value = rx;
+    }
+
+    fn stream_video(&mut self, mut stream: TcpStream) {
+        let (video_tx, video_rx): (
+            mpsc::Sender<types::VideoFrame>,
+            mpsc::Receiver<types::VideoFrame>,
+        ) = mpsc::channel();
+
+        self.set_connection(Some(video_rx));
+
+        let mut video_thread = st_thread::spawn(move |stopped| {
+            while !stopped.get() {
+                match stream.read_msg::<msg::VideoFrame>(&mut vec![]) {
+                    Ok(frame) => {
+                        match image::load_from_memory_with_format(&frame.data, ImageFormat::Jpeg) {
+                            Ok(img) => {
+                                match video_tx.send(types::VideoFrame {
+                                    image: img.rotate90().to_rgb(),
+                                }) {
+                                    Ok(_) => {
+                                        //info!("Readed frame");
+                                    }
+                                    Err(e) => {
+                                        warn!("{}", e);
+                                    }
+                                };
+                            }
+                            Err(e) => error!("Failed to decode an image: {:?}", e),
+                        }
+                    }
+                    Err(e) => {
+                        warn!("{}", e);
+                    }
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        self.threads.insert(0, video_thread);
+    }
+
+    pub fn disconnect(&mut self) -> Result<(), io::Error> {
+        while let Some(thread) = self.threads.pop() {
+            let join_handle = thread.stop();
+            let result = join_handle.join().unwrap();
+        }
+
+        self.is_connected
+            .clone()
+            .store(false, sync::atomic::Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    pub fn try_push(&mut self) -> Option<MachineState> {
+        info!("try_push");
+        if self.state.dirty {
+            self.push_state(&self.state.state);
+            self.state.dirty = false;
+            Some(self.state.state)
+        } else {
+            None
+        }
+    }
+
+    fn push_state(&self, state: &types::MachineState) -> Result<(), io::Error> {
+        // if !self.is_connected() {
+        //     warn!("Cannot push data. Client is not connected.")
+        // }
+        info!("001");
+        match self.state_conn.try_lock() {
+            Ok(mut state_conn) => match *state_conn {
+                Some(ref mut s) => {
+                    info!("002");
+
+                    s.write_msg(state);
+                }
+                None => {
+                    info!("Not connected");
+                }
+            },
+            Err(e) => {
+                info!("Cannot unlock");
+            }
+        };
+
+        Ok(())
+
+        // match &self.state_conn {
+        //     Some(conn) => {
+        //         //
+        //     }
+        //     None => {}
+        // }
+    }
+
+    pub fn send(&mut self, e: KeyEvents) {
+        info!("Event");
+    }
+
+    pub fn receive(&mut self) -> types::VideoFrame {
+        info!("Event");
+        types::VideoFrame { image: vec![] }
+    }
 }
 
-// pub struct StateConnection {
-//     settings: settings::Settings,
-//     state: MachineState,
-//     stream: Option<std::net::TcpStream>,
-//     dirty: bool,
-// }
+pub struct State {
+    state: MachineState,
+    dirty: bool,
+}
 
-// impl StateConnection {
-//     pub fn new(settings: settings::Settings) -> Result<Self, Box<dyn Error>> {
-//         Ok(StateConnection {
-//             settings: settings,
-//             stream: None,
-//             state: MachineState {
-//                 backward: false,
-//                 forward: false,
-//                 left: false,
-//                 right: false,
-//                 lamp_enabled: false,
-//             },
-//             dirty: false,
-//         })
-//     }
+impl State {
+    pub fn new() -> Self {
+        State {
+            state: MachineState {
+                backward: false,
+                forward: false,
+                left: false,
+                right: false,
+                lamp_enabled: false,
+            },
+            dirty: false,
+        }
+    }
 
-//     pub fn connect(&mut self) {
-//         let addrs_iter = format!(
-//             "{}:{}",
-//             &self.settings.connection.host, &self.settings.connection.state_port
-//         )
-//         .to_socket_addrs()
-//         .unwrap();
+    pub fn forward(&mut self) {
+        if !self.state.forward {
+            self.state.forward = true;
+            self.dirty = true;
+        }
+    }
 
-//         for addr in addrs_iter {
-//             info!("Connecting to {:?}...", addr);
+    pub fn backward(&mut self) {
+        if !self.state.backward {
+            self.state.backward = true;
+            self.dirty = true;
+        }
+    }
 
-//             match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
-//                 Ok(stream) => {
-//                     info!("Successfully connected to server in port 3333");
-//                     stream.set_nodelay(true).expect("set_nodelay call failed");
-//                     stream.set_ttl(5).expect("set_ttl call failed");
-//                     self.stream = Some(stream);
-//                     break;
-//                 }
-//                 Err(e) => {
-//                     error!("Failed to connect: {}. Address: {}", e, addr);
-//                 }
-//             }
-//         }
-//     }
+    pub fn stop(&mut self) {
+        if self.state.forward || self.state.backward {
+            self.state.forward = false;
+            self.state.backward = false;
+            self.dirty = true;
+        }
+    }
 
-//     pub fn is_connected(&mut self) -> bool {
-//         self.stream.is_some()
-//     }
+    pub fn left(&mut self) {
+        if !self.state.left {
+            self.state.left = true;
+            self.dirty = true;
+        }
+    }
 
-//     pub fn disconnect(&mut self) {
-//         match &self.stream {
-//             Some(stream) => {
-//                 stream
-//                     .shutdown(Shutdown::Both)
-//                     .expect("Disconnect call failed");
-//                 self.stream = None;
-//             }
-//             None => {}
-//         };
-//     }
+    pub fn right(&mut self) {
+        if !self.state.right {
+            self.state.right = true;
+            self.dirty = true;
+        }
+    }
 
-//     pub fn forward(&mut self) {
-//         if !self.state.forward {
-//             self.state.forward = true;
-//             self.dirty = true;
-//         }
-//     }
+    pub fn straight(&mut self) {
+        if self.state.left || self.state.right {
+            self.state.left = false;
+            self.state.right = false;
+            self.dirty = true;
+        }
+    }
 
-//     pub fn backward(&mut self) {
-//         if !self.state.backward {
-//             self.state.backward = true;
-//             self.dirty = true;
-//         }
-//     }
+    pub fn enable_light(&mut self) {
+        if !self.state.lamp_enabled {
+            self.state.lamp_enabled = true;
+            self.dirty = true;
+        }
+    }
 
-//     pub fn stop(&mut self) {
-//         if self.state.forward || self.state.backward {
-//             self.state.forward = false;
-//             self.state.backward = false;
-//             self.dirty = true;
-//         }
-//     }
-
-//     pub fn left(&mut self) {
-//         if !self.state.left {
-//             self.state.left = true;
-//             self.dirty = true;
-//         }
-//     }
-
-//     pub fn right(&mut self) {
-//         if !self.state.right {
-//             self.state.right = true;
-//             self.dirty = true;
-//         }
-//     }
-
-//     pub fn straight(&mut self) {
-//         if self.state.left || self.state.right {
-//             self.state.left = false;
-//             self.state.right = false;
-//             self.dirty = true;
-//         }
-//     }
-
-//     pub fn enable_light(&mut self) {
-//         if !self.state.lamp_enabled {
-//             self.state.lamp_enabled = true;
-//             self.dirty = true;
-//         }
-//     }
-
-//     pub fn disable_light(&mut self) {
-//         if self.state.lamp_enabled {
-//             self.state.lamp_enabled = false;
-//             self.dirty = true;
-//         }
-//     }
-
-//     pub fn push(&mut self) -> Option<MachineState> {
-//         if self.dirty {
-//             self.push_state();
-//             self.dirty = false;
-//             Some(self.state)
-//         } else {
-//             None
-//         }
-//     }
-
-//     fn push_state(&mut self) {
-//         if !self.is_connected() {
-//             warn!("Cannot push data. Client is not connected.")
-//         }
-//         let bytes = bincode::serialize(&self.state).unwrap();
-//         match self.stream.as_ref() {
-//             Some(mut stream) => match stream.write(&bytes) {
-//                 Ok(written) => {
-//                     debug!("Written {:?} bytes", written);
-
-//                     let mut data = [0 as u8; 1];
-//                     match stream.read_exact(&mut data) {
-//                         Ok(_) => {
-//                             debug!("Read {:?} bytes response", data.len());
-//                         }
-//                         Err(e) => {
-//                             error!(
-//                                 "Failed to read the response: {}. Retrying push operation...",
-//                                 e
-//                             );
-//                             self.push();
-//                         }
-//                     }
-//                 }
-//                 Err(e) => {
-//                     error!("Failed to write: {:?}", e);
-//                     self.connect();
-//                     self.push_state();
-//                 }
-//             },
-//             None => {
-//                 error!("Failed to write. Connection is not initialized. Reconnecting...");
-//                 self.connect();
-//             }
-//         }
-//     }
-// }
-
-// pub struct VideoConnection {
-//     settings: settings::Settings,
-//     receiver: Arc<Mutex<Option<mpsc::Receiver<VideoFrame>>>>,
-// }
-
-// pub struct VideoFrame {
-//     pub frame: image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>,
-// }
-
-// impl VideoConnection {
-//     pub fn new(settings: settings::Settings) -> VideoConnection {
-//         VideoConnection {
-//             settings: settings,
-//             receiver: Arc::new(Mutex::new(None)),
-//         }
-//     }
-
-//     pub fn connect(&mut self) -> Result<(), Box<dyn Error>> {
-//         if self.is_connected() {
-//             return Err(Box::new(io::Error::new(
-//                 io::ErrorKind::Other,
-//                 format!("Already connected"),
-//             )));
-//         }
-
-//         let addr_str = format!(
-//             "{}:{}",
-//             &self.settings.connection.host, &self.settings.connection.video_port
-//         );
-//         let addrs_iter = addr_str.to_socket_addrs()?;
-//         for addr in addrs_iter {
-//             match TcpStream::connect_timeout(&addr, Duration::from_millis(5000)) {
-//                 Ok(mut stream) => {
-//                     let receiver = self.receiver.clone();
-//                     let (tx, rx): (mpsc::Sender<VideoFrame>, mpsc::Receiver<VideoFrame>) =
-//                         mpsc::channel();
-
-//                     info!("Successfully connected to server port {:?}", addr);
-//                     let mut buffer: Vec<u8> = Vec::new();
-//                     let start_of_image: [u8; 2] = [255, 216];
-//                     let end_of_image: [u8; 2] = [255, 217];
-//                     let mut read_buffer = [0 as u8; 1024];
-
-//                     thread::spawn(move || {
-//                         loop {
-//                             match receiver.try_lock() {
-//                                 Ok(receiver) => {
-//                                     if !receiver.is_some() {
-//                                         break;
-//                                     }
-//                                 }
-//                                 Err(_) => {}
-//                             }
-
-//                             match stream.read_exact(&mut read_buffer) {
-//                                 Ok(_) => {
-//                                     buffer.extend_from_slice(&read_buffer);
-//                                     match (
-//                                         twoway::find_bytes(&buffer, &start_of_image),
-//                                         twoway::find_bytes(&buffer, &end_of_image),
-//                                     ) {
-//                                         (Some(soi_marker), Some(eoi_marker)) => {
-//                                             let rest_buffer = buffer.split_off(eoi_marker + 2);
-//                                             let image_buffer = buffer.split_off(soi_marker);
-//                                             match image::load_from_memory_with_format(
-//                                                 &image_buffer,
-//                                                 ImageFormat::Jpeg,
-//                                             ) {
-//                                                 Ok(img) => {
-//                                                     let frame = VideoFrame {
-//                                                         frame: img.rotate90().to_rgb(),
-//                                                     };
-//                                                     let _ = tx.send(frame);
-//                                                 }
-//                                                 Err(e) => {
-//                                                     error!("Failed to decode an image: {:?}", e)
-//                                                 }
-//                                             }
-
-//                                             buffer.clear();
-//                                             buffer.extend(rest_buffer);
-//                                         }
-//                                         _ => {}
-//                                     }
-//                                 }
-//                                 Err(e) => {
-//                                     error!("Failed to receive data: {}", e);
-//                                     std::thread::sleep(Duration::from_millis(100));
-//                                 }
-//                             }
-//                         }
-//                         info!("Disconnected");
-//                     });
-//                     self.set_connection(Some(rx));
-//                     return Ok(());
-//                 }
-//                 Err(e) => {
-//                     warn!("Failed to connect to {}: {}", addr, e);
-//                 }
-//             }
-//         }
-//         Err(Box::new(io::Error::new(
-//             io::ErrorKind::Other,
-//             format!("Failed to connect to {}", addr_str),
-//         )))
-//     }
-
-//     pub fn is_connected(&mut self) -> bool {
-//         match self.receiver.clone().try_lock() {
-//             Ok(receiver) => receiver.is_some(),
-//             Err(_) => false,
-//         }
-//     }
-
-//     pub fn set_connection(&mut self, rx: Option<mpsc::Receiver<VideoFrame>>) {
-//         let receiver = self.receiver.clone();
-//         let mut value = receiver.lock().unwrap();
-//         *value = rx;
-//     }
-
-//     pub fn connection(&self) -> Arc<Mutex<Option<mpsc::Receiver<VideoFrame>>>> {
-//         self.receiver.clone()
-//     }
-
-//     pub fn disconnect(&mut self) {
-//         self.set_connection(None);
-//     }
-// }
+    pub fn disable_light(&mut self) {
+        if self.state.lamp_enabled {
+            self.state.lamp_enabled = false;
+            self.dirty = true;
+        }
+    }
+}
