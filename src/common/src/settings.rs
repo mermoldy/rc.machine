@@ -30,8 +30,9 @@ pub struct Controller {}
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Settings {
     pub connection: Connection,
-    pub video: Video,
     pub heartbeat: Heartbeat,
+    pub video: Video,
+    pub controller: Controller,
 }
 
 impl Settings {

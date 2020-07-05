@@ -67,8 +67,11 @@ impl AppState {
 
 pub struct Delegate {
     pub sink: ExtEventSink,
-    is_connected: sync::Arc<sync::atomic::AtomicBool>,
+    is_connecting: sync::Arc<sync::atomic::AtomicBool>,
+    session_thread: Option<st_thread::StoppableHandle<()>>,
+    control_sender: Option<mpsc::Sender<types::MachineState>>,
     settings: settings::Settings,
+    machine_state: types::MachineState,
 }
 
 impl Delegate {
@@ -76,157 +79,145 @@ impl Delegate {
         Delegate {
             sink: sink,
             settings: settings,
-            is_connected: sync::Arc::new(sync::atomic::AtomicBool::default()),
+            session_thread: None,
+            control_sender: None,
+            machine_state: types::MachineState::new(),
+            is_connecting: sync::Arc::new(sync::atomic::AtomicBool::default()),
         }
     }
 
-    pub fn connect(&mut self) {
-        let is_connected = self.is_connected;
+    pub fn connect(&mut self) -> bool {
+        let is_connecting = &mut self.is_connecting;
 
-        if is_connected.into_inner() {
+        if self.session_thread.is_some() {
             warn!("Alredy connected.");
-            return;
-        } else {
-            is_connected
-                .clone()
-                .store(true, sync::atomic::Ordering::Relaxed);
+            return false;
         }
+        if is_connecting.clone().load(sync::atomic::Ordering::Relaxed) {
+            warn!("Alredy connecting.");
+            return true;
+        }
+        is_connecting
+            .clone()
+            .store(true, sync::atomic::Ordering::Relaxed);
 
         let sink = self.sink.clone();
         let settings = self.settings.clone();
 
-        let (key_tx, key_rx): (
-            mpsc::Sender<conn::KeyEvents>,
-            mpsc::Receiver<conn::KeyEvents>,
+        let (control_sender, control_receiver): (
+            mpsc::Sender<types::MachineState>,
+            mpsc::Receiver<types::MachineState>,
         ) = mpsc::channel();
 
-        thread::spawn(move || {
+        let session_th = st_thread::spawn(move |stopped| {
             let mut session = conn::Session::new(settings);
+
             match session.connect() {
-                Ok(_) => {
-                    let key_th = st_thread::spawn(move |stopped| {
-                        while !stopped.get() {
-                            match key_rx.try_recv() {
-                                Ok(value) => {
-                                    session.send(value);
+                Ok((video_receiver, control_sender)) => {
+                    sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Connected, None)
+                        .expect("Failed to submit command");
+
+                    let control_th = st_thread::spawn(move |control_stopped| {
+                        while !control_stopped.get() {
+                            match control_receiver.try_recv() {
+                                Ok(event) => {
+                                    let _ = control_sender.send(event);
                                 }
                                 Err(_) => {}
                             };
                         }
                     });
 
-                    let video_th = st_thread::spawn(move |stopped| {
-                        while !stopped.get() {
-                            session.receive();
+                    let mut fps_counter = utils::FPSCounter::new(128);
+                    let video_th = st_thread::spawn(move |video_stopped| {
+                        while !video_stopped.get() {
+                            match video_receiver.try_recv() {
+                                Ok(frame) => {
+                                    sink.submit_command(VIDEO_SET_FRAME_COMMAND, frame, None)
+                                        .expect("Failed to submit command");
+                                    sink.submit_command(
+                                        VIDEO_SET_FPS_COMMAND,
+                                        fps_counter.tick(),
+                                        None,
+                                    )
+                                    .expect("Failed to submit command");
+                                }
+                                Err(_) => {}
+                            };
+                            thread::sleep(time::Duration::from_millis(10));
                         }
                     });
 
-                    session.disconnect();
-                }
-                Err(e) => {}
-            }
-        });
+                    while !stopped.get() {
+                        thread::sleep(time::Duration::from_millis(200));
+                    }
 
-        is_connected
-            .clone()
-            .store(false, sync::atomic::Ordering::Relaxed);
-    }
-
-    pub fn connect_(&mut self) {
-        let sink = self.sink.clone();
-        //let settings = self.settings.clone();
-
-        thread::spawn(move || {
-            thread::spawn(move || {});
-        });
-
-        thread::spawn(move || {
-            // let mut session = conn::Session::new(settings);
-            match session.connect() {
-                Ok(_) => {
-                    sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Connected, None)
-                        .expect("Failed to submit command");
+                    debug!("Stopping session...");
+                    control_th.stop();
+                    video_th.stop();
+                    match session.disconnect() {
+                        Ok(_) => debug!("session stopped"),
+                        Err(e) => warn!("{}", e),
+                    }
                 }
                 Err(e) => {
+                    warn!("{}", e);
                     sink.submit_command(
                         CONNECTION_COMMAND,
                         ConnectionEvent::Error(format!("{}", e)),
                         None,
                     )
                     .expect("Failed to submit command");
-                    return;
                 }
-            };
-
-            // self.is_connected
-            //     .clone()
-            //     .store(true, sync::atomic::Ordering::Relaxed);
+            }
         });
-    }
 
-    pub fn disconnect(&mut self) {
-        let sink = self.sink.clone();
+        self.session_thread = Some(session_th);
+        self.control_sender = Some(control_sender);
 
-        match self.session.disconnect() {
-            Ok(_) => {
-                sink.submit_command(CONNECTION_COMMAND, ConnectionEvent::Disconnected, None)
-                    .expect("Failed to submit command");
-            }
-            Err(e) => {
-                error!("{}", e);
-            }
-        }
-
-        self.is_connected
+        is_connecting
             .clone()
             .store(false, sync::atomic::Ordering::Relaxed);
+        true
+    }
+
+    pub fn disconnect(&mut self, delay: time::Duration) -> bool {
+        let sink = self.sink.clone();
+
+        if self
+            .is_connecting
+            .clone()
+            .load(sync::atomic::Ordering::Relaxed)
+        {
+            warn!("Connection in progress. Try later.");
+            return false;
+        }
+
+        match self.session_thread.take() {
+            Some(session) => {
+                thread::spawn(move || match session.stop().join() {
+                    Ok(_) => {
+                        thread::sleep(delay);
+                        sink.submit_command(
+                            CONNECTION_COMMAND,
+                            ConnectionEvent::Disconnected,
+                            None,
+                        )
+                        .expect("Failed to submit command");
+                    }
+                    _ => {}
+                });
+            }
+            None => {
+                warn!("Not connected.");
+            }
+        }
+        true
     }
 
     pub fn on_connected(&self) {
-        self.process_video_events();
-        self.process_gamepad_events();
-    }
-
-    fn process_video_events(&self) {
-        let sink = self.sink.clone();
-        let mut fps_counter = utils::FPSCounter::new(128);
-        let connection = self.session.video_rx.clone();
-
-        thread::spawn(move || {
-            info!("UI has been connected from the video stream");
-            loop {
-                match connection.clone().try_lock() {
-                    Ok(rx_mutex) => match *rx_mutex {
-                        Some(ref rx) => match rx.try_recv() {
-                            Ok(image) => {
-                                sink.submit_command(VIDEO_SET_FRAME_COMMAND, image, None)
-                                    .expect("Failed to submit command");
-                                sink.submit_command(
-                                    VIDEO_SET_FPS_COMMAND,
-                                    fps_counter.tick(),
-                                    None,
-                                )
-                                .expect("Failed to submit command");
-                            }
-                            _ => {
-                                thread::sleep(time::Duration::from_millis(40));
-                            }
-                        },
-                        None => {
-                            sink.submit_command(
-                                CONNECTION_COMMAND,
-                                ConnectionEvent::Disconnected,
-                                None,
-                            )
-                            .expect("Failed to submit command");
-                            break;
-                        }
-                    },
-                    _ => {}
-                }
-            }
-            info!("UI has been disconnected from the video stream");
-        });
+        // self.process_video_events();
+        // self.process_gamepad_events();
     }
 
     fn process_gamepad_events(&self) {
@@ -238,7 +229,7 @@ impl Delegate {
                 return;
             }
         };
-        let is_connected = self.is_connected.clone();
+        let is_connected = self.is_connecting.clone();
 
         thread::spawn(move || loop {
             if !is_connected.load(sync::atomic::Ordering::Relaxed) {
@@ -258,37 +249,25 @@ impl Delegate {
         });
     }
 
-    pub fn try_push_state(&mut self, data: &mut AppState) {
-        match self.session.try_push() {
-            Some(ms) => {
-                info!("Pushed the state.");
-                let mut status = "";
-                if ms.forward {
-                    if ms.left {
-                        status = "↖";
-                    } else if ms.right {
-                        status = "↗";
-                    } else {
-                        status = "⬆";
-                    }
-                } else if ms.backward {
-                    if ms.left {
-                        status = "↙";
-                    } else if ms.right {
-                        status = "↘";
-                    } else {
-                        status = "⬇";
-                    }
-                } else if ms.left {
-                    status = "⬅";
-                } else if ms.right {
-                    status = "➡";
+    pub fn update_machine_state(
+        &mut self,
+        event: types::MachineEvents,
+    ) -> Option<types::MachineState> {
+        if self.machine_state.update(event) {
+            match &self.control_sender {
+                Some(sender) => {
+                    match sender.send(self.machine_state) {
+                        Err(e) => {
+                            warn!("{}", e);
+                        }
+                        _ => {}
+                    };
+                    Some(self.machine_state.clone())
                 }
-
-                data.direction_state = status.to_string();
-                data.light_state = if ms.lamp_enabled { "💡" } else { "" }.to_string();
+                None => None,
             }
-            _ => {}
+        } else {
+            None
         }
     }
 }
@@ -303,97 +282,131 @@ impl AppDelegate<AppState> for Delegate {
         _env: &Env,
     ) -> bool {
         if cmd.is(KEYBOARD_COMMAND) | cmd.is(GAMEPAD_COMMAND) {
+            let mut event: Option<types::MachineEvents> = None;
             if cmd.is(KEYBOARD_COMMAND) {
-                match cmd.get_unchecked(KEYBOARD_COMMAND) {
+                event = match cmd.get_unchecked(KEYBOARD_COMMAND) {
                     Event::KeyDown(key) => match key.key_code {
-                        KeyCode::KeyL => self.session.state.enable_light(),
-                        KeyCode::ArrowUp => self.session.state.forward(),
-                        KeyCode::ArrowDown => self.session.state.backward(),
-                        KeyCode::ArrowRight => self.session.state.right(),
-                        KeyCode::ArrowLeft => self.session.state.left(),
-                        _ => {}
+                        KeyCode::KeyL => Some(types::MachineEvents::LightTrigger),
+                        KeyCode::ArrowUp => Some(types::MachineEvents::Forward),
+                        KeyCode::ArrowDown => Some(types::MachineEvents::Backward),
+                        KeyCode::ArrowRight => Some(types::MachineEvents::Right),
+                        KeyCode::ArrowLeft => Some(types::MachineEvents::Left),
+                        _ => None,
                     },
                     Event::KeyUp(key) => match key.key_code {
-                        KeyCode::KeyL => self.session.state.disable_light(),
-                        KeyCode::ArrowUp => self.session.state.stop(),
-                        KeyCode::ArrowDown => self.session.state.stop(),
-                        KeyCode::ArrowRight => self.session.state.straight(),
-                        KeyCode::ArrowLeft => self.session.state.straight(),
-                        _ => {}
+                        KeyCode::ArrowUp => Some(types::MachineEvents::Stop),
+                        KeyCode::ArrowDown => Some(types::MachineEvents::Stop),
+                        KeyCode::ArrowRight => Some(types::MachineEvents::Straight),
+                        KeyCode::ArrowLeft => Some(types::MachineEvents::Straight),
+                        _ => None,
                     },
-                    _ => {}
-                }
+                    _ => None,
+                };
             }
             if cmd.is(GAMEPAD_COMMAND) {
                 let gamepad_event = cmd.get_unchecked(GAMEPAD_COMMAND);
-                match gamepad_event {
+                event = match gamepad_event {
                     gilrs::EventType::ButtonPressed(button, _) => match button {
-                        gilrs::Button::East => {
-                            self.session.state.enable_light();
-                        }
-                        _ => {}
-                    },
-                    gilrs::EventType::ButtonReleased(button, _) => match button {
-                        gilrs::Button::East => self.session.state.disable_light(),
-                        _ => {}
+                        gilrs::Button::East => Some(types::MachineEvents::LightTrigger),
+                        _ => None,
                     },
                     gilrs::EventType::AxisChanged(axis, value, _) => match axis {
                         gilrs::Axis::LeftStickX => {
                             if value > &0.5 {
-                                self.session.state.right();
+                                Some(types::MachineEvents::Right)
                             } else if value < &-0.5 {
-                                self.session.state.left();
+                                Some(types::MachineEvents::Left)
                             } else {
-                                self.session.state.straight();
+                                Some(types::MachineEvents::Straight)
                             }
                         }
-                        _ => {}
+                        _ => None,
                     },
                     gilrs::EventType::ButtonChanged(button, value, _) => match button {
                         gilrs::Button::RightTrigger2 => {
                             if value > &0.5 {
-                                self.session.state.forward();
+                                Some(types::MachineEvents::Forward)
                             } else {
-                                self.session.state.stop();
+                                Some(types::MachineEvents::Stop)
                             }
                         }
                         gilrs::Button::LeftTrigger2 => {
                             if value > &0.5 {
-                                self.session.state.backward();
+                                Some(types::MachineEvents::Backward)
                             } else {
-                                self.session.state.stop();
+                                Some(types::MachineEvents::Stop)
                             }
                         }
-                        _ => {}
+                        _ => None,
                     },
-                    _ => {}
-                }
+                    _ => None,
+                };
             }
-            self.try_push_state(data);
+            match event {
+                Some(event) => match self.update_machine_state(event) {
+                    Some(ms) => {
+                        let mut status = "";
+                        if ms.forward {
+                            if ms.left {
+                                status = "↖";
+                            } else if ms.right {
+                                status = "↗";
+                            } else {
+                                status = "⬆";
+                            }
+                        } else if ms.backward {
+                            if ms.left {
+                                status = "↙";
+                            } else if ms.right {
+                                status = "↘";
+                            } else {
+                                status = "⬇";
+                            }
+                        } else if ms.left {
+                            status = "⬅";
+                        } else if ms.right {
+                            status = "➡";
+                        }
+                        data.direction_state = status.to_string();
+                        data.light_state = if ms.lamp_enabled { "💡" } else { "" }.to_string();
+                    }
+                    None => {}
+                },
+                None => {}
+            }
         }
         if cmd.is(CONNECTION_COMMAND) {
             match cmd.get_unchecked(CONNECTION_COMMAND) {
                 ConnectionEvent::InitConnect => {
-                    data.connection_status = format!("Connecting...");
                     if !data.is_connected {
-                        self.connect();
-                    }
-                }
-                ConnectionEvent::InitDisconnect => {
-                    if data.is_connected {
-                        self.disconnect();
+                        if self.connect() {
+                            data.connection_status = format!("Connecting...");
+                        }
                     }
                 }
                 ConnectionEvent::Connected => {
+                    data.connection_status = format!("");
                     data.is_connected = true;
                     self.on_connected();
                 }
+                ConnectionEvent::InitDisconnect => {
+                    if data.is_connected {
+                        if self.disconnect(time::Duration::from_secs(0)) {
+                            data.connection_status = format!("Disconnecting...");
+                        }
+                    }
+                }
                 ConnectionEvent::Disconnected => {
+                    data.connection_status = format!("");
                     data.is_connected = false;
                 }
                 ConnectionEvent::Error(e) => {
-                    data.is_connected = false;
                     data.connection_status = format!("{}", e);
+                    let mut delay = 0;
+                    if !data.is_connected {
+                        delay = 2;
+                    }
+                    self.disconnect(time::Duration::from_secs(delay));
                 }
             }
         }

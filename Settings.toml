@@ -13,5 +13,7 @@ missed_beats = 6
 [video]
 # Height and width of frame.
 resolution = [600, 800]
-max_framerate = 32  # FPS
+max_framerate = 25  # FPS
 device = "/dev/video0"
+
+[controller]

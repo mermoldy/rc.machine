@@ -35,6 +35,7 @@ impl Engine {
     }
 
     pub fn forward(&mut self) {
+        info!("Forward machine");
         self.pin_1.set_value(1).expect("Failed to set pin");
         self.pin_2.set_value(0).expect("Failed to set pin");
     }
@@ -107,9 +108,9 @@ impl Machine {
         if state.forward {
             if state.left {
                 self.right_engine.stop();
-                self.left_engine.backward();
+                self.left_engine.forward();
             } else if state.right {
-                self.right_engine.backward();
+                self.right_engine.forward();
                 self.left_engine.stop();
             } else {
                 self.right_engine.forward();
@@ -152,38 +153,3 @@ impl Machine {
         self.left_engine.unexport();
     }
 }
-
-// fn handle_client(mut stream: TcpStream, sender: &std::sync::mpsc::Sender<MachineState>) {
-//     let addr = stream.peer_addr().unwrap();
-//     let mut data = [0 as u8; 50];
-
-//     loop {
-//         match stream.read(&mut data) {
-//             Ok(size) => {
-//                 if size == 0 {
-//                     break;
-//                 }
-//                 info!("Readed {} bytes, deserializing...", size);
-//                 match bincode::deserialize::<MachineState>(&data[0..size]) {
-//                     Ok(state) => {
-//                         sender.send(state);
-//                         let b: [u8; 1] = [1];
-//                         stream.write(&b);
-//                     }
-//                     _ => {
-//                         error!("Failed to deserialize incoming data");
-//                     }
-//                 };
-//             }
-//             Err(_) => {
-//                 error!("An error occurred, terminating connection with {}", addr);
-//                 match stream.shutdown(Shutdown::Both) {
-//                     Ok(_) => {}
-//                     _ => error!("Failed to shutdown stream properly"),
-//                 }
-//                 break;
-//             }
-//         }
-//     }
-//     info!("Exited: {}", addr);
-// }

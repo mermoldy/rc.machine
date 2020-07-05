@@ -1,4 +1,3 @@
-pub mod camera;
 pub mod conn;
 pub mod machine;
 pub mod utils;
@@ -14,6 +13,7 @@ extern crate signal_hook;
 extern crate simple_error;
 extern crate sysfs_gpio;
 
+use std::sync;
 use std::thread;
 use std::time;
 
@@ -43,32 +43,33 @@ fn main() {
     info!("Initializing GPIO...");
     let mut machine = machine::Machine::new();
     machine.export();
+    let machine_mutex = sync::Arc::new(sync::Mutex::new(machine));
 
     info!("Initializing session pool on {} port...", config.port);
-    let mut session_pool = conn::SessionPool::new(config);
-    thread::spawn(move || match session_pool.listen() {
-        Ok(_) => {}
-        Err(e) => {
-            error!("{}", e);
-            error!("Exiting...");
-            std::process::exit(3);
-        }
+    let mut session_pool = conn::SessionPool::new(config, machine_mutex.clone());
+
+    thread::spawn(move || {
+        match session_pool.listen() {
+            Ok(_) => {
+                info!("Exiting...");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                error!("{}", e);
+                error!("Exiting...");
+                std::process::exit(3);
+            }
+        };
     });
 
     info!("Starting event loop...");
-    let recv_timeout = time::Duration::from_millis(100);
     loop {
-        // match &session_pool.recv_state(recv_timeout) {
-        //     Some(state) => {
-        //         // info!("Got state: {:?}", state);
-        //         machine.update(state);
-        //     }
-        //     _ => {}
-        // }
         for sig in signals.pending() {
             info!("Received signal {:?}, exiting...", sig);
+            let mut machine = machine_mutex.try_lock().expect("Failed to lock GPIO");
             machine.unexport();
             std::process::exit(sig);
         }
+        thread::sleep(time::Duration::from_millis(200));
     }
 }

@@ -34,6 +34,18 @@ impl fmt::Debug for MachineState {
 }
 impl Eq for MachineState {}
 
+pub enum MachineEvents {
+    Forward,
+    Backward,
+    Stop,
+
+    Left,
+    Right,
+    Straight,
+
+    LightTrigger,
+}
+
 impl MachineState {
     pub fn new() -> MachineState {
         MachineState {
@@ -42,6 +54,66 @@ impl MachineState {
             left: false,
             right: false,
             lamp_enabled: false,
+        }
+    }
+
+    pub fn update(&mut self, event: MachineEvents) -> bool {
+        match event {
+            MachineEvents::Forward => {
+                if !self.forward {
+                    self.forward = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            MachineEvents::Backward => {
+                if !self.backward {
+                    self.backward = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            MachineEvents::Stop => {
+                if self.forward || self.backward {
+                    self.forward = false;
+                    self.backward = false;
+                    true
+                } else {
+                    false
+                }
+            }
+            MachineEvents::Left => {
+                if !self.left {
+                    self.left = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            MachineEvents::Right => {
+                if !self.right {
+                    self.right = true;
+                    true
+                } else {
+                    false
+                }
+            }
+            MachineEvents::Straight => {
+                if self.left || self.right {
+                    self.left = false;
+                    self.right = false;
+                    true
+                } else {
+                    false
+                }
+            }
+
+            MachineEvents::LightTrigger => {
+                self.lamp_enabled = !self.lamp_enabled;
+                true
+            }
         }
     }
 }
