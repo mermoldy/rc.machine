@@ -5,6 +5,7 @@ pub mod utils;
 #[macro_use]
 extern crate log;
 extern crate bincode;
+extern crate chrono;
 extern crate common;
 extern crate log4rs;
 extern crate log_panics;

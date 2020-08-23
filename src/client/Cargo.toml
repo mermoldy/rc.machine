@@ -9,7 +9,7 @@ common = { path = "../common" }
 config = "0.9"
 serde = { version = "1.0.111", features = ["derive"] }
 bincode = "1.2.0"
-log = "0.4.0"
+log = "0.4.8"
 env_logger = "0.7.1"
 gilrs = "0.7.4"
 image = "0.23.4"
@@ -21,3 +21,4 @@ druid-shell = "0.6"
 druid-material-icons = { git = "https://github.com/derekdreery/druid-material-icons" }
 simple-error = "0.2.1"
 stoppable_thread = "0.2.1"
+chrono = "0.4.15"

@@ -1,5 +1,6 @@
 [workspace]
 members = ["src/server", "src/client", "src/common"]
+exclude = ["src/hello_web"]
 default-members = ["src/client"]
 
 [profile.release]

@@ -2,8 +2,12 @@ extern crate image;
 extern crate serde;
 
 use self::serde::{Deserialize, Serialize};
-use settings::{Heartbeat, Video};
 use std::fmt;
+
+pub struct VideoFrame {
+    pub image: image::RgbImage,
+    pub timestamp_ms: i64,
+}
 
 #[derive(Serialize, Deserialize, Copy, Clone)]
 pub struct MachineState {
@@ -116,8 +120,4 @@ impl MachineState {
             }
         }
     }
-}
-
-pub struct VideoFrame {
-    pub image: image::RgbImage,
 }

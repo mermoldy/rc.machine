@@ -1,5 +1,6 @@
 extern crate bincode;
 
+use chrono;
 use simple_error::SimpleError as Error;
 use std::collections::HashMap;
 use std::error;
@@ -182,6 +183,7 @@ impl Session {
                             match camera.capture() {
                                 Ok(mut frame) => match stream.write_msg(&msg::VideoFrame {
                                     data: frame.to_vec(),
+                                    timestamp_ms: chrono::Utc::now().timestamp_millis(),
                                 }) {
                                     Err(e) => {
                                         error!(

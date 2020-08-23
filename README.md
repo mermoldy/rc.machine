@@ -11,17 +11,16 @@ RC.Machine is a client/server application to control Raspberry PI based robot
 ### Server
 
 - [As systemd service](linux-systemd/README.md)
-- [Via docker](docker/README.md) (TODO)
 
 ## Build
 
-### Build Client
+### Client
 
 ```console
-make run
+make
 ```
 
-### Build Server
+### Server
 
 - Set up ARMv7 cross compilation toolchain for the MacOS:
 

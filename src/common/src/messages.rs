@@ -39,4 +39,5 @@ pub struct OpenControllerConnection {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoFrame {
     pub data: Vec<u8>,
+    pub timestamp_ms: i64,
 }

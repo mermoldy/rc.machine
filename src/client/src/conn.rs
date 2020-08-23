@@ -6,26 +6,20 @@ extern crate image;
 
 use crate::common::conn::MessageStream;
 use crate::common::messages as msg;
-use crate::common::settings;
 use crate::common::types;
 
 use crate::settings::Settings;
 use std::time::Duration;
 
 use self::image::ImageFormat;
-use std::error;
 use std::io;
 use std::net::ToSocketAddrs;
 use std::sync;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time;
 
-use common::types::MachineState;
-use simple_error::SimpleError as Error;
-use std::io::{Read, Write};
-use std::net::{Shutdown, TcpStream};
+use std::net::TcpStream;
 use stoppable_thread as st_thread;
 
 pub struct Session {
@@ -139,6 +133,7 @@ impl Session {
             token: self.settings.connection.token.clone(),
             session_id: None,
             conn_type: msg::ConnectionType::Session(self.settings.heartbeat.clone()),
+            // timestamp: std::time::Duration::new(),
         };
         stream.write_msg(open_session_msg)?;
 
@@ -248,7 +243,7 @@ impl Session {
             mpsc::Receiver<types::VideoFrame>,
         ) = mpsc::channel();
 
-        let mut video_thread = st_thread::spawn(move |stopped| {
+        let video_thread = st_thread::spawn(move |stopped| {
             while !stopped.get() {
                 match stream.read_msg::<msg::VideoFrame>(&mut vec![]) {
                     Ok(frame) => {
@@ -256,23 +251,22 @@ impl Session {
                             Ok(img) => {
                                 match video_sender.send(types::VideoFrame {
                                     image: img.rotate90().to_rgb(),
+                                    timestamp_ms: frame.timestamp_ms,
                                 }) {
-                                    Ok(_) => {
-                                        //info!("Readed frame");
-                                    }
+                                    Ok(_) => {}
                                     Err(e) => {
-                                        warn!("{}", e);
+                                        warn!("Failed to process a frame: {:?}", e);
                                     }
                                 };
                             }
-                            Err(e) => error!("Failed to decode an image: {:?}", e),
+                            Err(e) => warn!("Failed to decode a frame: {:?}", e),
                         }
                     }
                     Err(e) => {
-                        warn!("{}", e);
+                        warn!("Failed to read a frame: {:?}", e);
                     }
                 }
-                thread::sleep(Duration::from_millis(20));
+                thread::sleep(Duration::from_millis(15));
             }
         });
         self.threads.insert(0, video_thread);
@@ -291,11 +285,13 @@ impl Session {
                 match control_receiver.try_recv() {
                     Ok(state) => match stream.write_msg(&state) {
                         Err(e) => {
-                            warn!("{}", e);
+                            warn!("Failed to write a state: {:?}", e);
                         }
                         _ => {}
                     },
-                    Err(_) => {}
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
                 }
             }
         });
@@ -307,7 +303,7 @@ impl Session {
     pub fn disconnect(&mut self) -> Result<(), io::Error> {
         while let Some(thread) = self.threads.pop() {
             let join_handle = thread.stop();
-            let result = join_handle.join().unwrap();
+            join_handle.join().unwrap();
         }
 
         self.is_connected

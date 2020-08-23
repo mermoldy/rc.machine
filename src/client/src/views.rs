@@ -1,3 +1,4 @@
+extern crate chrono;
 extern crate gilrs;
 extern crate image;
 
@@ -10,8 +11,8 @@ use crate::common::types;
 use crate::conn;
 use crate::utils;
 
-use druid::piet::{ImageFormat, InterpolationMode};
 use druid::{
+    piet::{FontBuilder, ImageFormat, InterpolationMode, Text, TextLayoutBuilder},
     widget::{
         prelude::*, Align, Controller, FillStrat, Flex, Label, Split, ViewSwitcher, WidgetExt,
     },
@@ -25,6 +26,7 @@ use sync::mpsc;
 pub const BASE_BG_COLOR: Color = Color::rgb8(0x1E, 0x1E, 0x1E);
 pub const BASE_LIGHT_BG_COLOR: Color = Color::rgb8(0x33, 0x33, 0x33);
 pub const BOTTOM_BAR_BG_COLOR: Color = Color::rgb8(0x00, 0x75, 0xC4);
+pub const VIDEO_OVERLAY_COLOR: Color = Color::rgb8(0xf0, 0xf0, 0xea);
 
 pub const CONNECTION_COMMAND: Selector<ConnectionEvent> = Selector::new("connection.event");
 pub const KEYBOARD_COMMAND: Selector<druid::Event> = Selector::new("keyboard.event");
@@ -69,6 +71,7 @@ pub struct Delegate {
     pub sink: ExtEventSink,
     is_connecting: sync::Arc<sync::atomic::AtomicBool>,
     session_thread: Option<st_thread::StoppableHandle<()>>,
+    gamepad_thread: Option<st_thread::StoppableHandle<()>>,
     control_sender: Option<mpsc::Sender<types::MachineState>>,
     settings: settings::Settings,
     machine_state: types::MachineState,
@@ -80,6 +83,7 @@ impl Delegate {
             sink: sink,
             settings: settings,
             session_thread: None,
+            gamepad_thread: None,
             control_sender: None,
             machine_state: types::MachineState::new(),
             is_connecting: sync::Arc::new(sync::atomic::AtomicBool::default()),
@@ -90,11 +94,11 @@ impl Delegate {
         let is_connecting = &mut self.is_connecting;
 
         if self.session_thread.is_some() {
-            warn!("Alredy connected.");
+            warn!("A session is already connected.");
             return false;
         }
         if is_connecting.clone().load(sync::atomic::Ordering::Relaxed) {
-            warn!("Alredy connecting.");
+            warn!("A session is already connecting.");
             return true;
         }
         is_connecting
@@ -123,7 +127,9 @@ impl Delegate {
                                 Ok(event) => {
                                     let _ = control_sender.send(event);
                                 }
-                                Err(_) => {}
+                                Err(_) => {
+                                    thread::sleep(time::Duration::from_millis(10));
+                                }
                             };
                         }
                     });
@@ -142,9 +148,10 @@ impl Delegate {
                                     )
                                     .expect("Failed to submit command");
                                 }
-                                Err(_) => {}
+                                Err(_) => {
+                                    thread::sleep(time::Duration::from_millis(10));
+                                }
                             };
-                            thread::sleep(time::Duration::from_millis(10));
                         }
                     });
 
@@ -156,7 +163,7 @@ impl Delegate {
                     control_th.stop();
                     video_th.stop();
                     match session.disconnect() {
-                        Ok(_) => debug!("session stopped"),
+                        Ok(_) => debug!("Session stopped."),
                         Err(e) => warn!("{}", e),
                     }
                 }
@@ -215,38 +222,41 @@ impl Delegate {
         true
     }
 
-    pub fn on_connected(&self) {
-        // self.process_video_events();
-        // self.process_gamepad_events();
+    pub fn on_connected(&mut self) {
+        if self.gamepad_thread.is_some() {
+            warn!("Gamepad is alredy connected.");
+        } else {
+            match self.process_gamepad_events() {
+                Ok(thread) => {
+                    self.gamepad_thread = Some(thread);
+                }
+                Err(e) => {
+                    error!("Failed to initialize a gamepad controller: {:?}", e);
+                    return;
+                }
+            }
+        }
     }
 
-    fn process_gamepad_events(&self) {
+    fn process_gamepad_events(&mut self) -> Result<st_thread::StoppableHandle<()>, gilrs::Error> {
+        let mut gamepad = gilrs::Gilrs::new()?;
         let sink = self.sink.clone();
-        let mut gamepad = match gilrs::Gilrs::new() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to initialize a gamepad controller: {:?}", e);
-                return;
-            }
-        };
-        let is_connected = self.is_connecting.clone();
 
-        thread::spawn(move || loop {
-            if !is_connected.load(sync::atomic::Ordering::Relaxed) {
-                break;
+        Ok(st_thread::spawn(move |stopped| {
+            while !stopped.get() {
+                match gamepad.next_event() {
+                    Some(gilrs::Event {
+                        id: _,
+                        event,
+                        time: _,
+                    }) => sink
+                        .submit_command(GAMEPAD_COMMAND, event.clone(), None)
+                        .expect("Render command failed to submit."),
+                    None => {}
+                }
+                thread::sleep(time::Duration::from_millis(2));
             }
-            match gamepad.next_event() {
-                Some(gilrs::Event {
-                    id: _,
-                    event,
-                    time: _,
-                }) => sink
-                    .submit_command(GAMEPAD_COMMAND, event.clone(), None)
-                    .expect("Render command failed to submit."),
-                None => {}
-            }
-            thread::sleep(time::Duration::from_millis(2));
-        });
+        }))
     }
 
     pub fn update_machine_state(
@@ -416,6 +426,7 @@ impl AppDelegate<AppState> for Delegate {
 
 pub struct MovingImage {
     image_data: std::vec::Vec<u8>,
+    timestamp_ms: i64,
     size: Size,
     fill: FillStrat,
 }
@@ -424,6 +435,7 @@ impl MovingImage {
     pub fn new() -> Self {
         MovingImage {
             image_data: vec![0; 0],
+            timestamp_ms: 0,
             size: Size::new(0.0, 0.0),
             fill: FillStrat::default(),
         }
@@ -443,6 +455,7 @@ impl Widget<AppState> for MovingImage {
                     let rgb_image = cmd.get_unchecked(VIDEO_SET_FRAME_COMMAND);
                     let sizeofimage = &rgb_image.image.dimensions();
                     self.image_data = rgb_image.image.to_vec();
+                    self.timestamp_ms = rgb_image.timestamp_ms;
                     self.size = Size::new(sizeofimage.0 as f64, sizeofimage.1 as f64);
                     ctx.request_paint();
 
@@ -497,6 +510,8 @@ impl Widget<AppState> for MovingImage {
 
         let offset_matrix = self.fill.affine_to_fill(ctx.size(), self.size);
         ctx.transform(offset_matrix);
+
+        // Draw a video frame
         match ctx.make_image(
             self.size.width as usize,
             self.size.height as usize,
@@ -510,6 +525,27 @@ impl Widget<AppState> for MovingImage {
                 error!("Failed to render a frame: {}", e);
             }
         }
+
+        // Draw timestamp
+        let duration =
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(self.timestamp_ms as u64);
+        let datetime = chrono::prelude::DateTime::<chrono::Local>::from(duration);
+        let timestamp_str = datetime.format("%Y-%m-%d %H:%M:%S.%3f").to_string();
+
+        let font = ctx
+            .text()
+            .new_font_by_name("Default", 16.0)
+            .build()
+            .unwrap();
+        let layout = ctx
+            .text()
+            .new_text_layout(&font, &timestamp_str, std::f64::INFINITY)
+            .build()
+            .unwrap();
+
+        ctx.with_save(|ctx| {
+            ctx.draw_text(&layout, (20.0, 20.0), &VIDEO_OVERLAY_COLOR);
+        });
     }
 }
 
