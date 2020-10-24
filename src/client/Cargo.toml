@@ -16,9 +16,9 @@ image = "0.23.4"
 twoway = "0.2.1"
 find_folder = "*"
 toml = "0.5"
-druid = { version = "0.6", features=["image",  "im", "svg"]}
+druid = { version = "0.6", features=["image", "im", "svg"]}
 druid-shell = "0.6"
-druid-material-icons = { git = "https://github.com/derekdreery/druid-material-icons" }
+druid-material-icons = { git = "https://github.com/derekdreery/druid-material-icons", rev = "b59b7fc47991ab5010a5f2007ff73421b699581a" }
 simple-error = "0.2.1"
 stoppable_thread = "0.2.1"
 chrono = "0.4.15"

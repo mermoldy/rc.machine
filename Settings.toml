@@ -2,7 +2,7 @@
 host = "raspberrypi.local"
 port = 20301
 # Generate new token: openssl rand -base64 64
-token = "YizfFg1UG4xYnijgz6vs8OTwJtJfyRqQJQBnSz9blqkg8Nd1THrz44HbCbA9wsJa"
+token = "54hhmu7ruiHMYkNACx8LmSkQOdE1dKUDoHgaQRjZ7ClAfJ8qJYkTrO9U9EDX7Yht"
 
 [heartbeat]
 # How often to send a heart beat in milliseconds.

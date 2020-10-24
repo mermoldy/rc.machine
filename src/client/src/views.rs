@@ -224,7 +224,7 @@ impl Delegate {
 
     pub fn on_connected(&mut self) {
         if self.gamepad_thread.is_some() {
-            warn!("Gamepad is alredy connected.");
+            debug!("Gamepad is alredy connected.");
         } else {
             match self.process_gamepad_events() {
                 Ok(thread) => {
